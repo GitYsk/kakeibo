@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
-import { importCsv, assets, totals, charges, charge, addMonths } from "../src/core.ts";
+import {
+  importCsv,
+  assets,
+  totals,
+  charges,
+  charge,
+  addMonths,
+} from "../src/core.ts";
 const args = process.argv.slice(2);
 const options = new Map<string, string>();
 for (let i = 0; i < args.length; i += 2) {
@@ -59,11 +66,13 @@ if (options.has("--split-date")) {
       name: "split-installments",
       pass:
         charge(split, start, "PAYMENT")?.amount ===
-          (Math.floor(split.amount / split.installments) + split.amount % split.installments) &&
+          Math.floor(split.amount / split.installments) +
+            (split.amount % split.installments) &&
         charge(split, second, "PAYMENT")?.amount ===
           Math.floor(split.amount / split.installments) &&
         charge(split, addMonths(start, -1), "PURCHASE")?.amount ===
-          (Math.floor(split.amount / split.installments) + split.amount % split.installments) &&
+          Math.floor(split.amount / split.installments) +
+            (split.amount % split.installments) &&
         charge(split, start, "PURCHASE")?.amount ===
           Math.floor(split.amount / split.installments) &&
         charge(split, addMonths(start, -1), "PAYMENT") === null &&

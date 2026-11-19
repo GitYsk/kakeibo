@@ -203,3 +203,24 @@ test("CSV replacement previews invalid rows, protects recovery and confirms exte
     "\u4eca\u9031\u306e\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u306f\u5b8c\u4e86",
   );
 });
+test("CSV record export does not complete the weekly JSON backup", async ({
+  page,
+}) => {
+  await open(page);
+  await page.getByRole("button", { name: "\u8a2d\u5b9a", exact: true }).click();
+  const wait = page.waitForEvent("download");
+  await page
+    .getByRole("button", {
+      name: "\u8a18\u9332\u4e00\u89a7\u3092CSV\u3067\u4fdd\u5b58",
+      exact: true,
+    })
+    .click();
+  const downloaded = await wait;
+  expect(downloaded.suggestedFilename()).toMatch(/^kakeibo_records_.*\.csv$/);
+  await page
+    .getByRole("button", { name: "\u30db\u30fc\u30e0", exact: true })
+    .click();
+  await expect(page.locator(".backup-status")).toContainText(
+    "\u672a\u5b8c\u4e86",
+  );
+});

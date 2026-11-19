@@ -50,7 +50,7 @@ Active recurring templates generate the first day of each missing month, startin
 
 Use **Save to Drive** on Home, Settings or the weekly reminder. The app prepares a complete JSON file before the tap. It calls the native file picker directly during the tap if available; choose Drive if the system file provider offers it. Otherwise it offers file sharing, then a normal download. A failed asynchronous picker/write never silently opens another privileged UI: a new button tap selects the fallback. Cancellation leaves the week incomplete.
 
-Successful picker writes complete after the stream closes. Sharing and downloads require an explicit **Yes / No** confirmation that the file exists at the chosen destination. The app cannot inspect the contents of your Drive or prove that a share target saved the file. A snapshot export is historical and never completes the current weekly backup. Full JSON backups contain financial tables, settings, schema version, export time and a flat list of snapshots. Snapshots never contain nested snapshots. JSON files are unencrypted: choose a private destination.
+Successful picker writes complete after the stream closes. Sharing and downloads require an explicit **Yes / No** confirmation that the file exists at the chosen destination. The app cannot inspect the contents of your Drive or prove that a share target saved the file. Settings also exports the record list as an Excel-friendly UTF-8 CSV. CSV is for viewing and does not replace a full JSON backup or complete the weekly backup. A snapshot export is historical and never completes the current weekly backup. Full JSON backups contain financial tables, settings, schema version, export time and a flat list of snapshots. Snapshots never contain nested snapshots. JSON files are unencrypted: choose a private destination.
 
 Weeks start on Sunday in Asia/Tokyo. The first eligible activation shows a reminder unless the current week has a confirmed external backup. The selected weekday delays eligibility until that day. Later permits only one additional activation on that same day, then suppresses the dialog for the week. Forms defer the dialog without consuming its count. Disabling reminders hides the dialog but does not hide the Home backup status.
 
@@ -69,3 +69,7 @@ npm run verify:private -- --csv /absolute/path/outside-repo/source.csv --month Y
 ```
 
 Optional flags: `--first-date`, `--first-amount`, `--split-date`, `--split-amount`, `--split-month`. No personal expected values are embedded in this script or in the tests. Keep the command output and real invocation arguments outside version control.
+
+## Implementation references
+
+[GitHub Pages workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages), [Dexie transactions](https://dexie.org/docs/Dexie/Dexie.transaction()), [File System Access](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access), and [PWA update prompts](https://vite-pwa-org.netlify.app/guide/prompt-for-update.html).

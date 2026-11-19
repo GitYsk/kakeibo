@@ -12,6 +12,7 @@ import {
   weekKey,
   weekComplete,
   importCsv,
+  exportCsv,
   parseBackup,
   TYPE_LABEL,
   PAYMENT_LABEL,
@@ -657,7 +658,10 @@ function Month({
             max="2200-12"
             value={month}
             onChange={(e) => {
-              if (e.target.validity.valid && /^\d{4}-\d{2}$/.test(e.target.value))
+              if (
+                e.target.validity.valid &&
+                /^\d{4}-\d{2}$/.test(e.target.value)
+              )
                 setMonth(e.target.value);
             }}
           />
@@ -921,6 +925,7 @@ function SettingsView({
   onImport,
   onRestore,
   onExportSnapshot,
+  onCsv,
   onError,
   onBusy,
 }: {
@@ -929,6 +934,7 @@ function SettingsView({
   onImport: (file: File) => void;
   onRestore: (s: Snapshot) => void;
   onExportSnapshot: (s: Snapshot) => void;
+  onCsv: () => void;
   onError: (s: string) => void;
   onBusy: (busy: boolean) => void;
 }) {
@@ -966,6 +972,14 @@ function SettingsView({
         <p className="note">
           {
             "\u4fdd\u5b58\u753b\u9762\u3067\u4fdd\u5b58\u5148\u3092\u9078\u3093\u3067\u304f\u3060\u3055\u3044\u3002\u5171\u6709\u3084\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u306e\u5834\u5408\u306f\u3001\u4fdd\u5b58\u306e\u78ba\u8a8d\u5f8c\u306b\u5b8c\u4e86\u306b\u3057\u307e\u3059\u3002"
+          }
+        </p>
+        <button className="secondary wide" onClick={onCsv}>
+          {"\u8a18\u9332\u4e00\u89a7\u3092CSV\u3067\u4fdd\u5b58"}
+        </button>
+        <p className="note">
+          {
+            "CSV\u306f\u8a18\u9332\u306e\u95b2\u89a7\u7528\u3067\u3059\u3002\u5168\u30c7\u30fc\u30bf\u306e\u5fa9\u5143\u306b\u306fJSON\u3092\u4f7f\u3063\u3066\u304f\u3060\u3055\u3044\u3002CSV\u306e\u4fdd\u5b58\u3067\u306f\u4eca\u9031\u306e\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u306f\u5b8c\u4e86\u306b\u306a\u308a\u307e\u305b\u3093\u3002"
           }
         </p>
         <label className="check">
@@ -1381,6 +1395,21 @@ export function App() {
       return null;
     }
   }, [state, ready]);
+  const csvFile = useMemo(
+    () =>
+      new Blob([exportCsv(state.entries, state.stores)], {
+        type: "text/csv;charset=utf-8",
+      }),
+    [state.entries, state.stores],
+  );
+  const saveCsv = () => {
+    const url = URL.createObjectURL(csvFile);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "kakeibo_records_" + tokyoDate() + ".csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
   const error = (s: string) => setMessage(s);
   const tryReminder = async () => {
     if (!pending.current || blocked.current || claiming.current) return;
@@ -1838,6 +1867,7 @@ export function App() {
               <SettingsView
                 state={state}
                 onSave={() => save(prepared)}
+                onCsv={saveCsv}
                 onImport={(file) => void importFile(file)}
                 onRestore={(snapshot) =>
                   setOverlay({ kind: "restore", snapshot })

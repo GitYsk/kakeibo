@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   assets,
+  exportCsv,
   totals,
   charge,
   installment,
@@ -286,4 +287,14 @@ describe("transactional persistence", () => {
       await close(db);
     }
   });
+});
+
+it("exports quoted UTF-8 CSV while neutralizing spreadsheet formulas", () => {
+  const text = exportCsv(
+    [entry({ description: '=SYNTHETIC(1),"x"', installments: 1 })],
+    [],
+  );
+  expect(text.startsWith("\uFEFFDate,Category")).toBe(true);
+  expect(text).toContain("'=SYNTHETIC");
+  expect(text).toContain('""x""');
 });
