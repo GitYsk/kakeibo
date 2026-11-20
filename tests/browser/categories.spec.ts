@@ -61,5 +61,5 @@ test("category fields preserve drafts and normalize irrelevant values on save", 
       exact: true,
     })
     .click();
-  await expect(page.locator(".asset-value")).toContainText("111");
+  await expect(page.locator(".asset-card > .asset-value")).toContainText("111");
 });

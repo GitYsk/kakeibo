@@ -192,7 +192,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
       exact: true,
     })
     .click();
-  await expect(page.locator(".asset-value")).toContainText("10,085");
+  await expect(page.locator(".asset-card > .asset-value")).toContainText("10,085");
   await page.getByRole("button", { name: "\u5e74\u9593", exact: true }).click();
   await page.getByLabel("\u5bfe\u8c61\u5e74", { exact: true }).fill("2024");
   await expect(page.getByTestId("salary-taxable")).toContainText("0");
@@ -239,7 +239,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
   await page
     .getByRole("button", { name: "\u30db\u30fc\u30e0", exact: true })
     .click();
-  await expect(page.locator(".asset-value")).toContainText("10,085");
+  await expect(page.locator(".asset-card > .asset-value")).toContainText("10,085");
   await page.getByRole("button", { name: "\u8a2d\u5b9a", exact: true }).click();
   const employers = page.locator(".panel").filter({
     has: page.getByRole("heading", {
@@ -338,7 +338,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
   await page
     .getByRole("button", { name: "\u30db\u30fc\u30e0", exact: true })
     .click();
-  await expect(page.locator(".asset-value")).toContainText("10,085");
+  await expect(page.locator(".asset-card > .asset-value")).toContainText("10,085");
   await page.getByRole("button", { name: "\u5e74\u9593", exact: true }).click();
   await expect(page.getByTestId("salary-taxable")).toContainText("12,228");
   await page.screenshot({
@@ -352,7 +352,7 @@ test("upgrading a legacy browser preserves records and makes the pre-migration s
   await seedLegacy(page);
   const original = await rows(page, "transactions");
   await page.reload();
-  await expect(page.locator(".asset-value")).toContainText("144");
+  await expect(page.locator(".asset-card > .asset-value")).toContainText("144");
   expect(await rows(page, "transactions")).toEqual(
     original.map((e) => ({ ...e, incomeSourceId: null })),
   );

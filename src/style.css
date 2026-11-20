@@ -1143,3 +1143,48 @@ dialog::backdrop {
   background: var(--panel);
   color: var(--text);
 }
+.asset-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.asset-secondary > span {
+  font-size: 0.8rem;
+  color: #d4ebe0;
+}
+.asset-secondary .asset-value {
+  font-size: 1.15rem;
+  margin: 0;
+}
+.asset-card .asset-negative {
+  color: #ffb3a5;
+}
+.asset-pending {
+  font-size: 0.8rem;
+  color: #d4ebe0;
+  text-align: left;
+  padding: 10px 0;
+  width: 100%;
+  font-weight: 400;
+}
+.filter-panel fieldset {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 15px 0;
+  padding: 10px;
+}
+.filter-panel legend {
+  font-size: 0.875rem;
+}
+.filter-panel .check {
+  margin: 3px 0;
+}
+.filter-panel {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 0 12px;
+  margin: 15px 0;
+}

@@ -404,6 +404,11 @@ export class BudgetDB extends Dexie {
         !input.id || prior,
         "\u8a18\u9332\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
       );
+      if (input.type === "INCOME" || input.type === "ADJUST_INCOME")
+        requireValue(
+          input.date <= date,
+          "\u672a\u6765\u65e5\u4ed8\u306e\u5165\u91d1\u306f\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\u3002",
+        );
       input = normalizeEntry(input);
       if (input.incomeSourceId)
         requireValue(
@@ -693,6 +698,14 @@ export class BudgetDB extends Dexie {
   ) {
     input = parseBackup(JSON.stringify(input));
     const core = validateCore(input);
+    requireValue(
+      core.transactions.every(
+        (e) =>
+          !(e.type === "INCOME" || e.type === "ADJUST_INCOME") ||
+          e.date <= date,
+      ),
+      "\u672a\u6765\u65e5\u4ed8\u306e\u5165\u91d1\u3092\u542b\u3080\u30d5\u30a1\u30a4\u30eb\u306f\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3002",
+    );
     await this.transaction("rw", this.tablesForWrite(), async () => {
       const persistence = (await this.prefs()).persistence;
       const safetyId = await this.snapshotLocked(

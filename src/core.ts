@@ -36,7 +36,18 @@ export interface Store {
   sortOrder: number;
   hidden: boolean;
 }
+export interface RecordFilter {
+  parties: string[];
+  payments: string[];
+  payroll: string[];
+  installments: boolean;
+  adjustments: boolean;
+  from: string;
+  to: string;
+}
 export interface Settings {
+  recordView?: "EXPENSE" | "INCOME";
+  recordFilters?: Record<string, RecordFilter>;
   accounting: Accounting;
   lastExportAt: string | null;
   lastExportMethod: string;
@@ -510,6 +521,11 @@ export function importCsv(
         createdAt: now,
         updatedAt: now,
       };
+      if (entry.type === "INCOME" || entry.type === "ADJUST_INCOME")
+        requireValue(
+          entry.date <= tokyoDate(new Date(now)),
+          "\u672a\u6765\u65e5\u4ed8\u306e\u5165\u91d1\u306f\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3002",
+        );
       validateEntry(entry);
       transactions.push(entry);
     } catch (error) {
@@ -772,6 +788,8 @@ export function validateCore(raw: unknown): CoreBackup {
   const settings: Settings = {
     ...defaults(),
     accounting: s.accounting,
+    recordView: s.recordView === "INCOME" ? "INCOME" : "EXPENSE",
+    recordFilters: validateRecordFilters(s.recordFilters),
     lastExportAt: s.lastExportAt,
     lastExportMethod:
       typeof s.lastExportMethod === "string" ? s.lastExportMethod : "",
@@ -1282,4 +1300,78 @@ export function mergeIncomeSources(b: Backup): Backup {
       incomeSourceId: ids.get(p.incomeSourceId) ?? p.incomeSourceId,
     })),
   };
+}
+
+function validateRecordFilters(
+  raw: unknown,
+): Record<string, RecordFilter> | undefined {
+  if (raw === undefined) return undefined;
+  const o = object(raw);
+  const out: Record<string, RecordFilter> = {};
+  for (const key of ["EXPENSE", "INCOME"]) {
+    if (!o[key]) continue;
+    const f = object(o[key]);
+    requireValue(
+      ["parties", "payments", "payroll"].every(
+        (k) =>
+          Array.isArray(f[k]) &&
+          f[k].length <= 100000 &&
+          f[k].every((v: unknown) => typeof v === "string"),
+      ) &&
+        typeof f.installments === "boolean" &&
+        typeof f.adjustments === "boolean" &&
+        (!f.from || validDate(f.from)) &&
+        (!f.to || validDate(f.to)),
+      "Invalid record filters",
+    );
+    out[key] = {
+      parties: f.parties,
+      payments: f.payments,
+      payroll: f.payroll,
+      installments: f.installments,
+      adjustments: f.adjustments,
+      from: f.from,
+      to: f.to,
+    };
+  }
+  return out;
+}
+export function assetPosition(entries: Entry[], date = tokyoDate()) {
+  requireValue(validDate(date), "Invalid date");
+  const eligible = entries.filter((e) => e.date <= date);
+  const month = date.slice(0, 7);
+  const pending: { month: string; entry: Entry; amount: number }[] = [];
+  let paid = 0;
+  for (const e of eligible.filter((e) => e.type === "EXPENSE")) {
+    const start = addMonths(
+      e.date.slice(0, 7),
+      e.paymentMethod === "NEXT_MONTH" ? 1 : 0,
+    );
+    for (let i = 0; i < e.installments; i++) {
+      const m = addMonths(start, i);
+      const value = installment(e.amount, e.installments, i);
+      if (m <= month) paid = safeSum([paid, value]);
+      else pending.push({ month: m, entry: e, amount: value });
+    }
+  }
+  pending.sort(
+    (a, b) =>
+      a.month.localeCompare(b.month) ||
+      a.entry.date.localeCompare(b.entry.date),
+  );
+  const current = safeSum([
+    safeSum(
+      eligible
+        .filter((e) => e.type === "INCOME" || e.type === "ADJUST_INCOME")
+        .map((e) => e.amount),
+    ),
+    -safeSum(
+      eligible.filter((e) => e.type === "ADJUST_EXPENSE").map((e) => e.amount),
+    ),
+    -paid,
+  ]);
+  const full = assets(entries);
+  const scheduled = safeSum(pending.map((p) => p.amount));
+  const futureImpact = safeSum([full, -assets(eligible)]);
+  return { current, full, scheduled, futureImpact, pending };
 }

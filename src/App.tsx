@@ -1,3 +1,4 @@
+import { RecordList } from "./RecordList.tsx";
 import { Modal } from "./Modal.tsx";
 import {
   PayslipFields,
@@ -16,6 +17,7 @@ import { liveQuery } from "dexie";
 import { db } from "./db.ts";
 import {
   assets,
+  assetPosition,
   totals,
   charges,
   firstCharges,
@@ -246,6 +248,7 @@ interface Draft {
 }
 function Editor({
   original,
+  initialType = "EXPENSE",
   stores,
   incomeSources,
   originalPayslip,
@@ -254,6 +257,7 @@ function Editor({
   onError,
 }: {
   original: Entry | null;
+  initialType?: Entry["type"];
   stores: Store[];
   incomeSources: IncomeSource[];
   originalPayslip?: Payslip;
@@ -272,7 +276,7 @@ function Editor({
         }
       : {
           date: tokyoDate(),
-          type: "EXPENSE",
+          type: initialType,
           amount: "",
           description: "",
           storeId: "",
@@ -438,7 +442,11 @@ function Editor({
             type="date"
             required
             min="1900-01-01"
-            max="2200-12-31"
+            max={
+              draft.type === "INCOME" || draft.type === "ADJUST_INCOME"
+                ? tokyoDate()
+                : "2200-12-31"
+            }
             value={draft.date}
             onChange={(e) => update("date", e.target.value)}
           />
@@ -659,137 +667,27 @@ function Records({
   state,
   onEdit,
   onDelete,
+  onPayslip,
 }: {
   state: State;
   onEdit: (e: Entry) => void;
   onDelete: (e: Entry) => void;
+  onPayslip: (p: Payslip) => void;
 }) {
-  const [source, setSource] = useState("all");
-  const [query, setQuery] = useState("");
-  const [type, setType] = useState("");
-  const [store, setStore] = useState("all");
-  const [payment, setPayment] = useState("");
-  const [limit, setLimit] = useState(100);
-  const filtered = state.entries
-    .filter(
-      (e) =>
-        (!type || e.type === type) &&
-        (source === "all" ||
-          (e.type === "INCOME" &&
-            e.incomeSourceId === (source === "" ? null : Number(source)))) &&
-        (store === "all" ||
-          e.storeId === (store === "" ? null : Number(store))) &&
-        (!payment || e.paymentMethod === payment) &&
-        e.description.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
-    )
-    .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0));
-  const visible = filtered.slice(0, limit);
-  let previous = "";
   return (
-    <>
-      <div className="search">
-        <label>
-          <span className="sr-only">{"\u5185\u5bb9\u3092\u691c\u7d22"}</span>
-          <input
-            type="search"
-            placeholder={"\u5185\u5bb9\u3092\u691c\u7d22"}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setLimit(100);
-            }}
-          />
-        </label>
-      </div>
-      <details className="filter-panel">
-        <summary>{"\u7d5e\u308a\u8fbc\u307f"}</summary>
-        <label>
-          {"\u5206\u985e"}
-          <select value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="">{"\u3059\u3079\u3066\u306e\u5206\u985e"}</option>
-            {TYPES.map((t) => (
-              <option key={t} value={t}>
-                {TYPE_LABEL[t]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {"\u8cfc\u5165\u5148"}
-          <select value={store} onChange={(e) => setStore(e.target.value)}>
-            <option value="all">
-              {"\u3059\u3079\u3066\u306e\u8cfc\u5165\u5148"}
-            </option>
-            <option value="">{"\u672a\u8a2d\u5b9a"}</option>
-            {state.stores.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name + (s.hidden ? "\uff08\u975e\u8868\u793a\uff09" : "")}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {"\u652f\u6255\u65b9\u6cd5"}
-          <select value={payment} onChange={(e) => setPayment(e.target.value)}>
-            <option value="">
-              {"\u3059\u3079\u3066\u306e\u652f\u6255\u65b9\u6cd5"}
-            </option>
-            {PAYMENTS.map((p) => (
-              <option key={p} value={p}>
-                {PAYMENT_LABEL[p]}
-              </option>
-            ))}
-          </select>
-        </label>
-      </details>
-      <label>
-        {"\u5165\u91d1\u5143\u3067\u7d5e\u308a\u8fbc\u307f"}
-        <select value={source} onChange={(e) => setSource(e.target.value)}>
-          <option value="all">
-            {"\u3059\u3079\u3066\u306e\u5165\u91d1\u5143"}
-          </option>
-          <option value="">{"\u672a\u8a2d\u5b9a"}</option>
-          {state.incomeSources.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-      </label>{" "}
-      <p className="muted">{`${filtered.length}\u4ef6\u306e\u8a18\u9332`}</p>
-      {!filtered.length && (
-        <div className="empty">
-          {
-            "\u8a18\u9332\u306f\u307e\u3060\u3042\u308a\u307e\u305b\u3093\u3002\u53f3\u4e0b\u306e\uff0b\u304b\u3089\u8ffd\u52a0\u3059\u308b\u304b\u3001\u8a2d\u5b9a\u304b\u3089CSV\u3092\u53d6\u308a\u8fbc\u3081\u307e\u3059\u3002"
-          }
-        </div>
+    <RecordList
+      state={state}
+      onPayslip={onPayslip}
+      renderEntry={(entry) => (
+        <EntryCard
+          entry={entry}
+          stores={state.stores}
+          incomeSources={state.incomeSources}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       )}
-      {visible.map((e) => {
-        const month = e.date.slice(0, 7);
-        const heading = month !== previous;
-        previous = month;
-        return (
-          <div key={e.id}>
-            {heading && <h2 className="month-heading">{month}</h2>}
-            <EntryCard
-              entry={e}
-              stores={state.stores}
-              incomeSources={state.incomeSources}
-              onEdit={onEdit}
-              onDelete={onDelete}
-            />
-          </div>
-        );
-      })}
-      {filtered.length > limit && (
-        <button
-          className="secondary wide"
-          onClick={() => setLimit((v) => v + 100)}
-        >
-          {"\u3055\u3089\u306b100\u4ef6\u3092\u8868\u793a"}
-        </button>
-      )}
-    </>
+    />
   );
 }
 function Month({
@@ -1562,7 +1460,10 @@ export function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [month, setMonth] = useState(tokyoDate().slice(0, 7));
   const [year, setYear] = useState(Number(tokyoDate().slice(0, 4)));
-  const [editor, setEditor] = useState<{ entry: Entry | null } | null>(null);
+  const [editor, setEditor] = useState<{
+    entry: Entry | null;
+    type?: Entry["type"];
+  } | null>(null);
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [standalone, setStandalone] = useState<{ slip: Payslip | null } | null>(
     null,
@@ -1571,6 +1472,8 @@ export function App() {
   const [recovery, setRecovery] = useState<Prepared | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showPending, setShowPending] = useState(false);
+  const position = useMemo(() => assetPosition(state.entries), [state.entries]);
   const [message, setMessage] = useState("");
   const [update, setUpdate] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
@@ -1580,7 +1483,12 @@ export function App() {
   stateRef.current = state;
   const blocked = useRef(true);
   blocked.current =
-    !!editor || !!standalone || !!overlay || settingsBusy || saving;
+    !!editor ||
+    !!standalone ||
+    !!overlay ||
+    showPending ||
+    settingsBusy ||
+    saving;
   const pending = useRef(false);
   const claiming = useRef(false);
   const activation = useRef(0);
@@ -1717,9 +1625,16 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    if (!editor && !standalone && !overlay && !settingsBusy && !saving)
+    if (
+      !editor &&
+      !standalone &&
+      !overlay &&
+      !showPending &&
+      !settingsBusy &&
+      !saving
+    )
       void tryReminder();
-  }, [editor, standalone, overlay, settingsBusy, saving]);
+  }, [editor, standalone, overlay, showPending, settingsBusy, saving]);
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(""), 12000);
@@ -1895,7 +1810,10 @@ export function App() {
   };
   const salaryMissing = (entries: Entry[]) => {
     setRecordIds(new Set(entries.map((e) => e.id!)));
-    setTab("records");
+    void db.patchSettings({ recordView: "INCOME" }).then(async () => {
+      setState(await db.state());
+      setTab("records");
+    });
   };
   const labels: Record<Tab, string> = {
     home: "\u30db\u30fc\u30e0",
@@ -1990,15 +1908,43 @@ export function App() {
                   </button>
                 </section>
                 <section className="asset-card">
-                  <p>{"\u7dcf\u8cc7\u7523"}</p>
-                  <div className="asset-value">
-                    {yen(assets(state.entries))}
-                  </div>
-                  <p className="asset-caption">
-                    {
-                      "\u3059\u3079\u3066\u306e\u5165\u51fa\u91d1\u30fb\u8abf\u6574\u3092\u542b\u3080"
+                  <p>{"\u4eca\u6708\u6642\u70b9\u306e\u7dcf\u8cc7\u7523"}</p>
+                  <div
+                    className={
+                      "asset-value " +
+                      (position.current < 0 ? "asset-negative" : "")
                     }
-                  </p>
+                  >
+                    {yen(position.current)}
+                  </div>
+                  <div className="asset-secondary">
+                    <span>
+                      {
+                        "\u6765\u6708\u4ee5\u964d\u306e\u5f15\u304d\u843d\u3068\u3057\u3092\u542b\u3080"
+                      }
+                    </span>
+                    <strong
+                      className={
+                        "asset-value " +
+                        (position.full < 0 ? "asset-negative" : "")
+                      }
+                    >
+                      {yen(position.full)}
+                    </strong>
+                  </div>
+                  <button
+                    className="asset-pending"
+                    onClick={() => setShowPending(true)}
+                  >
+                    {"\u6765\u6708\u4ee5\u964d\u306e\u5f15\u304d\u843d\u3068\u3057\u4e88\u5b9a " +
+                      yen(-position.scheduled)}
+                  </button>
+                  {position.futureImpact !== 0 && (
+                    <p className="asset-caption">
+                      {"\u672a\u6765\u65e5\u4ed8\u306e\u8a18\u9332\u306b\u3088\u308b\u5168\u671f\u9593\u984d\u3078\u306e\u5f71\u97ff " +
+                        yen(position.futureImpact)}
+                    </p>
+                  )}{" "}
                   <div className="asset-meta">
                     <span>
                       {state.entries.length + "\u4ef6\u306e\u8a18\u9332"}
@@ -2115,6 +2061,7 @@ export function App() {
                   }
                   onEdit={edit}
                   onDelete={remove}
+                  onPayslip={editPayslip}
                 />
               </>
             )}
@@ -2171,7 +2118,15 @@ export function App() {
         className="fab"
         aria-label={"\u8a18\u9332\u3092\u8ffd\u52a0"}
         disabled={!ready}
-        onClick={() => setEditor({ entry: null })}
+        onClick={() =>
+          setEditor({
+            entry: null,
+            type:
+              tab === "records"
+                ? (state.settings.recordView ?? "EXPENSE")
+                : "EXPENSE",
+          })
+        }
       >
         <Icon name="plus" />
       </button>
@@ -2210,6 +2165,32 @@ export function App() {
             {"\u00d7"}
           </button>
         </div>
+      )}
+      {showPending && (
+        <Modal
+          title={
+            "\u6765\u6708\u4ee5\u964d\u306e\u5f15\u304d\u843d\u3068\u3057\u4e88\u5b9a"
+          }
+          onClose={() => setShowPending(false)}
+        >
+          <p>{"\u5408\u8a08 " + yen(position.scheduled)}</p>
+          {position.pending.map((p, i) => (
+            <div className="snapshot-row" key={i}>
+              <strong>{p.month + " \u00b7 " + p.entry.description}</strong>
+              <p>{yen(p.amount)}</p>
+            </div>
+          ))}
+          {!position.pending.length && (
+            <p>{"\u4e88\u5b9a\u306f\u3042\u308a\u307e\u305b\u3093\u3002"}</p>
+          )}
+          {position.futureImpact !== 0 && (
+            <p className="notice">
+              {"\u672a\u6765\u65e5\u4ed8\u306e\u8a18\u9332\u306f\u3053\u306e\u4e88\u5b9a\u306b\u542b\u307f\u307e\u305b\u3093\u3002\u5168\u671f\u9593\u306e\u7dcf\u8cc7\u7523\u306b\u306f " +
+                yen(position.futureImpact) +
+                " \u306e\u5f71\u97ff\u304c\u3042\u308a\u307e\u3059\u3002"}
+            </p>
+          )}
+        </Modal>
       )}
       {standalone && (
         <StandalonePayslipEditor
@@ -2262,6 +2243,7 @@ export function App() {
         <Editor
           key={editor.entry?.id ?? "new"}
           original={editor.entry}
+          initialType={editor.type}
           stores={state.stores}
           incomeSources={state.incomeSources}
           originalPayslip={state.payslips.find(
