@@ -24,7 +24,7 @@ Runtime dependencies: React and React DOM render the UI; Dexie provides versione
 
 The public repository is `GitYsk/kakeibo`. Set Settings > Pages > Build and deployment > Source to **GitHub Actions**. Push `main`. The workflow installs locked dependencies, runs the unit tests, builds, uploads the static artifact and deploys to Pages. A failed test blocks deployment. The base path, manifest ID, start URL and scope are `/kakeibo/`. If the repository name changes, update all these together.
 
-The app version comes from `package.json`; release tags use `v0.1.0` style. Database schema versions are independent of app versions. Future schema changes must add a Dexie migration, never recreate the database. Updates are checked on launch and foreground activation. A banner offers an explicit update action, disabled while a form or modal is open. Other open tabs do not automatically reload after another tab updates.
+The app version comes from `package.json`; release tags use `v0.1.0` style. Database schema versions are independent of app versions. Version 0.2.0 uses database schema 2 and adds payslips and employers; existing transactions, recurring templates, stores and settings are preserved. Future schema changes must add a Dexie migration, never recreate the database. Updates are checked on launch and foreground activation. A banner offers an explicit update action, disabled while a form or modal is open. Other open tabs do not automatically reload after another tab updates.
 
 ## Install on Android
 
@@ -45,6 +45,30 @@ After a successful migration, manually stop the old Apps Script recurring trigge
 Assets count all income, expenses and adjustments at full value. Monthly and annual summaries omit adjustments. Expense installments begin in the purchase month, shifted one month for NEXT_MONTH only in payment-month mode. Division uses integer yen, with the entire remainder added to the first installment. Income stays in its dated month. Home, month and year share the selected accounting mode. The next-month tab shows purchase cohorts and also all next-month installments due in the selected month.
 
 Active recurring templates generate the first day of each missing month, starting in the month after their initial entry. Generation, cursor advancement and weekly snapshot creation are transactional. A unique generated key plus existing-month detection prevents duplicates across tabs. Deleting a generated entry does not stop its template or regenerate older deleted months. Price edits apply next month; ending a template stops future generation. Editing a past entry changes that entry only; use Settings to change the template.
+
+## Payslips and annual salary
+
+When an entry is Income, enable the payslip switch to add payroll details. Select an employer or add one inline without losing the draft. The payment date initially follows the income date; the work period defaults to the previous month and remains editable. Enter basic pay, taxable extras, non-taxable allowances and deductions in integer yen. Less common fields are in the expandable details section. The form shows taxable pay, gross pay, total deductions and net pay live. A mismatch with the income amount produces a warning and an explicit button to copy net pay into that amount; saving a mismatch is allowed.
+
+Editing an existing income can add, edit or remove its payslip. Turning the payslip switch off confirms removal on save; the income itself remains. Changing a linked income to another category also requires confirmation before removing its payslip. When deleting a linked income, choose to delete its payslip as well or keep a standalone payslip. These changes commit atomically. A payslip never silently changes the household income amount.
+
+Use **Annual > Salary > Add payslip only** for payroll from before migration or for other unlinked documents. Standalone slips do not change assets, household monthly income or the household annual income summary. They do contribute to salary totals. Each document displays whether it is standalone or linked. Open a month in the salary list to edit it; linked slips open their income editor.
+
+Annual salary is the sum of taxable pay by the year of the payment date, independent of the work period, income date and household accounting mode. Taxable pay is basic pay plus overtime and other taxable pay. Non-taxable commuting and other non-taxable allowances are excluded from this headline. The section also shows gross/non-taxable pay, social insurance, withheld income tax, resident tax, net pay, employer breakdowns and twelve monthly rows. Its CSV includes annual, employer and monthly summaries.
+
+The missing-payslip notice is a heuristic, not a complete salary detector: it matches an income description exactly (after trimming) against descriptions and employer names already associated with linked payroll. It omits unrelated incomes and does not infer payroll from all income records. Tap the notice to filter records and attach missing slips.
+
+Settings manages employers with stable IDs, rename, reordering and hide/show. An employer used by any slip cannot be deleted. Optional named salary targets are entered by the user, included in backups and compared with annual taxable salary. No statutory thresholds or tax-eligibility decision rules are embedded.
+
+## Schema migration and recovery
+
+Before opening schema 2 over an existing schema-1 database, the app uses a separate connection to commit a flat BEFORE_MIGRATION snapshot. It then closes that connection and adds only the new tables. Identical source content reuses the same protected copy; a failed attempt followed by new legacy entries produces a new copy. A final upgrade-boundary check captures writes that arrived after the preflight copy. The initial committed copy remains available even if the version-change transaction aborts. A new empty installation does not need a migration snapshot.
+
+An upgrade failure stops normal startup without clearing or rewriting existing financial records. The error screen prepares a recovery JSON from the protected snapshot, or the unchanged current records if they are newer, and offers native save, explicit sharing fallback or download with confirmation. When another tab blocks the upgrade, the app asks for the other tab to be closed; it never deletes the database to unblock it. Save unfinished work and close other household-budget tabs before updating across a schema change.
+
+Retention is eight weekly snapshots, five combined manual/before-import snapshots, and a separate five migration snapshots. Internal copies remain in the same browser and are not an external backup.
+
+Full JSON exports use schema version 2 and include payslips, employers and named targets. Schema-1 files and historical snapshots are still accepted, with missing payroll tables and targets treated as empty. Restoring an old file replaces current payroll too: the preview states that limitation and creates a full BEFORE_IMPORT recovery copy first. Backups and snapshots are flat and never recursively nest their own snapshot history. Import previews include counts and the date period.
 
 ## External backups and recovery
 

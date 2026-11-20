@@ -968,3 +968,178 @@ dialog::backdrop {
     color: #80d8b6;
   }
 }
+.payroll-fields {
+  margin: 24px 0 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+.payroll-fields h3 {
+  font-size: 1.1rem;
+  text-align: left;
+  margin: 0 0 18px;
+}
+.payroll-details {
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.payroll-details h4 {
+  margin: 18px 0 4px;
+}
+.payroll-fields .pay-totals,
+.salary-breakdown {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 15px 10px;
+  padding: 18px 15px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 0.875rem;
+}
+.payroll-fields .pay-totals dd,
+.salary-breakdown dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.pay-totals dt,
+.salary-breakdown dt {
+  color: var(--muted);
+}
+.payroll-year {
+  margin-top: 32px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.salary-hero {
+  padding: 22px 18px;
+  background: var(--selected);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+.salary-hero p {
+  font-size: 0.875rem;
+  margin-top: 0;
+}
+.salary-hero > strong {
+  display: block;
+  font-size: 2rem;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.salary-hero .note {
+  margin: 12px 0 0;
+  font-size: 0.8rem;
+}
+.pay-subheading {
+  font-size: 1rem;
+  margin: 24px 0 12px;
+}
+.employer-summary {
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 9px;
+}
+.employer-summary strong {
+  font-size: 0.95rem;
+}
+.employer-summary p {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.salary-month-head,
+.salary-month > summary {
+  display: grid;
+  grid-template-columns: 24px 1fr 0.8fr 1fr;
+  gap: 4px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.875rem;
+  text-align: right;
+  padding: 13px 6px;
+}
+.salary-month-head span:first-child,
+.salary-month > summary span:first-child {
+  text-align: center;
+}
+.salary-month-head {
+  color: var(--muted);
+}
+.salary-month {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--panel);
+}
+.salary-month:last-child {
+  border-bottom: 1px solid var(--line);
+  border-radius: 0 0 12px 12px;
+}
+.salary-month > summary {
+  min-height: 52px;
+  list-style: none;
+}
+.salary-month > summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.salary-month[open] > summary {
+  background: var(--selected);
+}
+.salary-month > summary::-webkit-details-marker {
+  display: none;
+}
+.payslip-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border-radius: 0;
+  font-weight: 400;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+}
+.payslip-card strong {
+  font-size: 0.95rem;
+}
+.payslip-card span,
+.payslip-card small {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.salary-target {
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 12px 0;
+  background: var(--panel);
+}
+.salary-target strong {
+  font-size: 0.95rem;
+}
+.salary-target p {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.salary-target progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+.payroll-year .button-row button {
+  font-size: 0.875rem;
+}
+.payroll-year .notice {
+  font-size: 0.875rem;
+  text-align: left;
+}
+.fatal .secondary {
+  background: var(--panel);
+  color: var(--text);
+}

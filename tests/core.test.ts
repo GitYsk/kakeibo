@@ -282,7 +282,7 @@ describe("transactional persistence", () => {
       await db.open();
       await db.startup("new-release", "2024-04-08", now);
       expect((await db.transactions.toArray())[0].amount).toBe(19);
-      expect(db.verno).toBe(1);
+      expect(db.verno).toBe(2);
     } finally {
       await close(db);
     }

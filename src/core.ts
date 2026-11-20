@@ -45,22 +45,25 @@ export interface Settings {
   reminderCount: number;
   retryDate: string | null;
   persistence: "granted" | "denied" | "unsupported" | "unknown";
+  salaryTargets: SalaryTarget[];
 }
 export interface CoreBackup {
   format: "kakeibo-web";
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   exportedAt: string;
   appVersion: string;
   transactions: Entry[];
   recurringPayments: Recurring[];
   stores: Store[];
+  payslips?: Payslip[];
+  employers?: Employer[];
   settings: Settings;
 }
 export interface Snapshot {
   id?: number;
   createdAt: string;
   weekKey: string;
-  reason: "WEEKLY" | "BEFORE_IMPORT" | "MANUAL";
+  reason: "WEEKLY" | "BEFORE_IMPORT" | "BEFORE_MIGRATION" | "MANUAL";
   weeklyKey?: string;
   data: CoreBackup;
 }
@@ -68,6 +71,8 @@ export interface Backup extends CoreBackup {
   snapshots?: Snapshot[];
 }
 export interface State {
+  payslips: Payslip[];
+  employers: Employer[];
   entries: Entry[];
   recurring: Recurring[];
   stores: Store[];
@@ -113,6 +118,7 @@ export const defaults = (): Settings => ({
   reminderCount: 0,
   retryDate: null,
   persistence: "unknown",
+  salaryTargets: [],
 });
 export function fail(message: string): never {
   throw new Error(message);
@@ -570,7 +576,7 @@ const iso = (value: unknown) =>
 export function validateCore(raw: unknown): CoreBackup {
   const o = object(raw);
   requireValue(
-    o.format === "kakeibo-web" && o.schemaVersion === 1,
+    o.format === "kakeibo-web" && [1, 2].includes(o.schemaVersion),
     "\u5bfe\u5fdc\u3057\u3066\u3044\u306a\u3044\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u5f62\u5f0f\u3067\u3059\u3002",
   );
   requireValue(
@@ -722,6 +728,8 @@ export function validateCore(raw: unknown): CoreBackup {
       typeof s.lastExportMethod === "string" ? s.lastExportMethod : "",
     remindersEnabled: s.remindersEnabled,
     reminderDay: s.reminderDay,
+    salaryTargets:
+      o.schemaVersion === 2 ? validateSalaryTargets(s.salaryTargets ?? []) : [],
   };
   requireValue(
     settings.lastExportAt === null || iso(settings.lastExportAt),
@@ -734,6 +742,11 @@ export function validateCore(raw: unknown): CoreBackup {
       settings.reminderDay <= 6,
     "\u6848\u5185\u8a2d\u5b9a\u304c\u4e0d\u6b63\u3067\u3059\u3002",
   );
+  const employers = o.schemaVersion === 2 ? validateEmployers(o.employers) : [];
+  const payslips =
+    o.schemaVersion === 2
+      ? validatePayroll(o.payslips, employers, transactions)
+      : [];
   settings.reminderWeek = "";
   settings.reminderCount = 0;
   settings.retryDate = null;
@@ -742,7 +755,9 @@ export function validateCore(raw: unknown): CoreBackup {
   assets(transactions);
   return {
     format: "kakeibo-web",
-    schemaVersion: 1,
+    schemaVersion: o.schemaVersion,
+    payslips,
+    employers,
     exportedAt: o.exportedAt,
     appVersion: typeof o.appVersion === "string" ? o.appVersion : "unknown",
     transactions,
@@ -773,7 +788,12 @@ export function parseBackup(text: string): Backup {
             iso(s.createdAt) &&
               validDate(s.weekKey) &&
               weekKey(s.weekKey) === s.weekKey &&
-              ["WEEKLY", "BEFORE_IMPORT", "MANUAL"].includes(s.reason),
+              [
+                "WEEKLY",
+                "BEFORE_IMPORT",
+                "BEFORE_MIGRATION",
+                "MANUAL",
+              ].includes(s.reason),
             "\u9000\u907f\u30c7\u30fc\u30bf\u304c\u4e0d\u6b63\u3067\u3059\u3002",
           );
           return {
@@ -792,4 +812,391 @@ export function parseBackup(text: string): Backup {
     "\u540c\u3058\u9031\u306e\u9000\u907f\u30c7\u30fc\u30bf\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
   );
   return { ...core, snapshots };
+}
+
+export type Employer = Store;
+export interface SalaryTarget {
+  id: string;
+  name: string;
+  amount: number;
+}
+export interface Payslip {
+  id?: number;
+  transactionId: number | null;
+  employerId: number;
+  payDate: string;
+  workPeriod: string;
+  basePay: number;
+  overtimePay: number;
+  otherTaxablePay: number;
+  commuteAllowance: number;
+  otherNonTaxablePay: number;
+  healthInsurance: number;
+  pensionInsurance: number;
+  employmentInsurance: number;
+  incomeTax: number;
+  residentTax: number;
+  otherDeductions: number;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export const PAY_FIELDS = [
+  "basePay",
+  "overtimePay",
+  "otherTaxablePay",
+  "commuteAllowance",
+  "otherNonTaxablePay",
+  "healthInsurance",
+  "pensionInsurance",
+  "employmentInsurance",
+  "incomeTax",
+  "residentTax",
+  "otherDeductions",
+] as const;
+export type PayField = (typeof PAY_FIELDS)[number];
+export const PAY_LABEL: Record<PayField, string> = {
+  basePay: "\u57fa\u672c\u7d66",
+  overtimePay: "\u6b8b\u696d\u30fb\u6df1\u591c\u30fb\u4f11\u65e5\u624b\u5f53",
+  otherTaxablePay: "\u305d\u306e\u4ed6\u306e\u8ab2\u7a0e\u652f\u7d66",
+  commuteAllowance:
+    "\u901a\u52e4\u624b\u5f53\uff08\u975e\u8ab2\u7a0e\u5206\uff09",
+  otherNonTaxablePay: "\u305d\u306e\u4ed6\u306e\u975e\u8ab2\u7a0e\u652f\u7d66",
+  healthInsurance: "\u5065\u5eb7\u4fdd\u967a\u6599",
+  pensionInsurance: "\u539a\u751f\u5e74\u91d1\u4fdd\u967a\u6599",
+  employmentInsurance: "\u96c7\u7528\u4fdd\u967a\u6599",
+  incomeTax:
+    "\u6240\u5f97\u7a0e\uff08\u6e90\u6cc9\u5fb4\u53ce\u7a0e\u984d\uff09",
+  residentTax: "\u4f4f\u6c11\u7a0e",
+  otherDeductions: "\u305d\u306e\u4ed6\u306e\u63a7\u9664",
+};
+export function emptyPayslip(date = tokyoDate()): Payslip {
+  return {
+    transactionId: null,
+    employerId: 0,
+    payDate: date,
+    workPeriod: addMonths(date.slice(0, 7), -1),
+    basePay: 0,
+    overtimePay: 0,
+    otherTaxablePay: 0,
+    commuteAllowance: 0,
+    otherNonTaxablePay: 0,
+    healthInsurance: 0,
+    pensionInsurance: 0,
+    employmentInsurance: 0,
+    incomeTax: 0,
+    residentTax: 0,
+    otherDeductions: 0,
+    memo: "",
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+export function payslipTotals(p: Payslip) {
+  const taxable = safeSum([p.basePay, p.overtimePay, p.otherTaxablePay]);
+  const nonTaxable = safeSum([p.commuteAllowance, p.otherNonTaxablePay]);
+  const gross = safeSum([taxable, nonTaxable]);
+  const social = safeSum([
+    p.healthInsurance,
+    p.pensionInsurance,
+    p.employmentInsurance,
+  ]);
+  const deductions = safeSum([
+    social,
+    p.incomeTax,
+    p.residentTax,
+    p.otherDeductions,
+  ]);
+  return {
+    taxable,
+    nonTaxable,
+    gross,
+    social,
+    deductions,
+    net: safeSum([gross, -deductions]),
+  };
+}
+export function validatePayslip(input: Payslip): Payslip {
+  requireValue(
+    input.id === undefined || (Number.isSafeInteger(input.id) && input.id > 0),
+    "\u660e\u7d30ID\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+  );
+  requireValue(
+    input.transactionId === null ||
+      (Number.isSafeInteger(input.transactionId) && input.transactionId > 0),
+    "\u5165\u91d1\u306e\u53c2\u7167\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+  );
+  requireValue(
+    Number.isSafeInteger(input.employerId) && input.employerId > 0,
+    "\u52e4\u52d9\u5148\u3092\u9078\u3093\u3067\u304f\u3060\u3055\u3044\u3002",
+  );
+  requireValue(
+    typeof input.payDate === "string" && validDate(input.payDate),
+    "\u652f\u7d66\u65e5\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+  );
+  requireValue(
+    typeof input.workPeriod === "string" && input.workPeriod.length <= 200,
+    "\u5bfe\u8c61\u671f\u9593\u306f200\u6587\u5b57\u4ee5\u5185\u3067\u3059\u3002",
+  );
+  requireValue(
+    typeof input.memo === "string" && input.memo.length <= 10000,
+    "\u30e1\u30e2\u306f1\u4e07\u6587\u5b57\u4ee5\u5185\u3067\u3059\u3002",
+  );
+  requireValue(
+    iso(input.createdAt) && iso(input.updatedAt),
+    "\u660e\u7d30\u306e\u4fdd\u5b58\u65e5\u6642\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+  );
+  const out: Payslip = {
+    id: input.id,
+    transactionId: input.transactionId,
+    employerId: input.employerId,
+    payDate: input.payDate,
+    workPeriod: input.workPeriod.trim(),
+    memo: input.memo,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+    ...Object.fromEntries(PAY_FIELDS.map((key) => [key, amount(input[key])])),
+  } as Payslip;
+  payslipTotals(out);
+  return out;
+}
+export function validateEmployers(raw: unknown): Employer[] {
+  const employers = array(raw).map((v) => {
+    const o = object(v);
+    requireValue(
+      Number.isSafeInteger(o.id) &&
+        o.id > 0 &&
+        typeof o.name === "string" &&
+        o.name.trim() === o.name &&
+        o.name.length > 0 &&
+        o.name.length <= 200 &&
+        Number.isSafeInteger(o.sortOrder) &&
+        o.sortOrder >= 0 &&
+        typeof o.hidden === "boolean",
+      "\u52e4\u52d9\u5148\u30c7\u30fc\u30bf\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+    );
+    return {
+      id: o.id,
+      name: o.name,
+      sortOrder: o.sortOrder,
+      hidden: o.hidden,
+    } as Employer;
+  });
+  requireValue(
+    new Set(employers.map((e) => e.id)).size === employers.length &&
+      new Set(employers.map((e) => e.name)).size === employers.length,
+    "\u52e4\u52d9\u5148\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
+  );
+  return employers;
+}
+export function validatePayroll(
+  raw: unknown,
+  employers: Employer[],
+  transactions: Entry[],
+): Payslip[] {
+  const es = new Set(employers.map((e) => e.id));
+  const entries = new Map(transactions.map((e) => [e.id, e]));
+  const slips = array(raw).map((v) => {
+    const p = validatePayslip(object(v) as unknown as Payslip);
+    requireValue(
+      p.id !== undefined,
+      "\u660e\u7d30ID\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
+    );
+    requireValue(
+      es.has(p.employerId),
+      "\u660e\u7d30\u306e\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+    );
+    requireValue(
+      p.transactionId === null ||
+        entries.get(p.transactionId)?.type === "INCOME",
+      "\u660e\u7d30\u306f\u5b58\u5728\u3059\u308b\u5165\u91d1\u306b\u3060\u3051\u7d10\u3065\u3051\u3089\u308c\u307e\u3059\u3002",
+    );
+    return p;
+  });
+  requireValue(
+    new Set(slips.map((p) => p.id)).size === slips.length,
+    "\u660e\u7d30ID\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
+  );
+  const linked = slips.flatMap((p) =>
+    p.transactionId === null ? [] : [p.transactionId],
+  );
+  requireValue(
+    new Set(linked).size === linked.length,
+    "\u540c\u3058\u5165\u91d1\u306b\u8907\u6570\u306e\u7d66\u4e0e\u660e\u7d30\u304c\u3042\u308a\u307e\u3059\u3002",
+  );
+  safeSum(slips.flatMap((p) => PAY_FIELDS.map((key) => p[key])));
+  return slips;
+}
+export function validateSalaryTargets(raw: unknown): SalaryTarget[] {
+  const targets = array(raw);
+  requireValue(
+    targets.length <= 50,
+    "\u7d66\u4e0e\u306e\u76ee\u5b89\u984d\u306f50\u4ef6\u307e\u3067\u3067\u3059\u3002",
+  );
+  const out = targets.map((v) => {
+    const o = object(v);
+    requireValue(
+      typeof o.id === "string" &&
+        o.id.length > 0 &&
+        o.id.length <= 200 &&
+        typeof o.name === "string" &&
+        o.name.trim().length > 0 &&
+        o.name.length <= 200,
+      "\u76ee\u5b89\u984d\u306e\u540d\u524d\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+    );
+    return { id: o.id, name: o.name.trim(), amount: amount(o.amount) };
+  });
+  requireValue(
+    new Set(out.map((t) => t.id)).size === out.length,
+    "\u76ee\u5b89\u984dID\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
+  );
+  return out;
+}
+export function annualSalary(
+  payslips: Payslip[],
+  employers: Employer[],
+  year: number,
+) {
+  const slips = payslips
+    .filter((p) => p.payDate.startsWith(String(year) + "-"))
+    .sort(
+      (a, b) => b.payDate.localeCompare(a.payDate) || (b.id ?? 0) - (a.id ?? 0),
+    );
+  const sum = (items: Payslip[]) => {
+    const values = items.map(payslipTotals);
+    return {
+      taxable: safeSum(values.map((v) => v.taxable)),
+      nonTaxable: safeSum(values.map((v) => v.nonTaxable)),
+      gross: safeSum(values.map((v) => v.gross)),
+      social: safeSum(values.map((v) => v.social)),
+      incomeTax: safeSum(items.map((p) => p.incomeTax)),
+      residentTax: safeSum(items.map((p) => p.residentTax)),
+      net: safeSum(values.map((v) => v.net)),
+    };
+  };
+  return {
+    slips,
+    ...sum(slips),
+    employers: employers
+      .filter((e) => slips.some((p) => p.employerId === e.id))
+      .map((e) => ({
+        ...e,
+        ...sum(slips.filter((p) => p.employerId === e.id)),
+      })),
+    months: Array.from({ length: 12 }, (_, i) => {
+      const month = `${year}-${String(i + 1).padStart(2, "0")}`;
+      const items = slips.filter((p) => p.payDate.startsWith(month));
+      return { month, slips: items, ...sum(items) };
+    }),
+  };
+}
+export function missingSalaryEntries(
+  entries: Entry[],
+  payslips: Payslip[],
+  employers: Employer[],
+  year: number,
+): Entry[] {
+  const linked = new Set(
+    payslips.flatMap((p) =>
+      p.transactionId === null ? [] : [p.transactionId],
+    ),
+  );
+  const linkedSlips = payslips.filter(
+    (p) =>
+      p.transactionId !== null && entries.some((e) => e.id === p.transactionId),
+  );
+  const known = new Set(
+    [
+      ...entries
+        .filter((e) => linked.has(e.id!))
+        .map((e) => e.description.trim()),
+      ...employers
+        .filter((e) => linkedSlips.some((p) => p.employerId === e.id))
+        .map((e) => e.name),
+    ].filter(Boolean),
+  );
+  return entries.filter(
+    (e) =>
+      e.type === "INCOME" &&
+      e.date.startsWith(String(year) + "-") &&
+      !linked.has(e.id!) &&
+      known.has(e.description.trim()),
+  );
+}
+export function salaryCsv(
+  payslips: Payslip[],
+  employers: Employer[],
+  year: number,
+): string {
+  const result = annualSalary(payslips, employers, year);
+  const rows: (string | number)[][] = [
+    [
+      "Section",
+      "Year",
+      "EmployerOrMonth",
+      "TaxablePayYen",
+      "IncomeTaxYen",
+      "NetPayYen",
+      "GrossPayYen",
+      "NonTaxablePayYen",
+      "SocialInsuranceYen",
+      "ResidentTaxYen",
+    ],
+    [
+      "Annual",
+      year,
+      "All",
+      result.taxable,
+      result.incomeTax,
+      result.net,
+      result.gross,
+      result.nonTaxable,
+      result.social,
+      result.residentTax,
+    ],
+    ...result.employers.map((e) => [
+      "Employer",
+      year,
+      e.name,
+      e.taxable,
+      e.incomeTax,
+      e.net,
+      e.gross,
+      e.nonTaxable,
+      e.social,
+      e.residentTax,
+    ]),
+    ...result.months.map((m) => [
+      "Month",
+      year,
+      m.month,
+      m.taxable,
+      m.incomeTax,
+      m.net,
+      m.gross,
+      m.nonTaxable,
+      m.social,
+      m.residentTax,
+    ]),
+  ];
+  return (
+    "\uFEFF" +
+    rows
+      .map((row) =>
+        row
+          .map((value) => {
+            const s = String(value);
+            return (
+              '"' +
+              (/^[\s]*[=+\-@\t\r]/.test(s) ? "'" + s : s).replaceAll(
+                '"',
+                '""',
+              ) +
+              '"'
+            );
+          })
+          .join(","),
+      )
+      .join("\r\n")
+  );
 }

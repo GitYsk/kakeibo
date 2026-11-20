@@ -1,3 +1,8 @@
+import {
+  LEGACY_SCHEMA,
+  protectBeforeMigration,
+  captureMigrationBoundary,
+} from "./migration.ts";
 import Dexie, { type Table } from "dexie";
 import {
   addMonths,
@@ -22,6 +27,11 @@ import {
   type Snapshot,
   type State,
   type Store,
+  type Employer,
+  type Payslip,
+  validatePayslip,
+  validateSalaryTargets,
+  PAY_FIELDS,
 } from "./core.ts";
 export class BudgetDB extends Dexie {
   transactions!: Table<Entry, number>;
@@ -29,17 +39,33 @@ export class BudgetDB extends Dexie {
   stores!: Table<Store, number>;
   snapshots!: Table<Snapshot, number>;
   settings!: Table<{ id: string; value: Settings }, string>;
+  employers!: Table<Employer, number>;
+  payslips!: Table<Payslip, number>;
+  private opening?: Promise<void>;
   constructor(name = "kakeibo-local") {
-    super(name);
-    this.version(1).stores({
-      transactions:
-        "++id,date,type,storeId,paymentMethod,recurringId,&generatedKey,[recurringId+monthKey]",
-      recurringPayments: "&id,storeId,lastGeneratedMonth",
-      stores: "++id,&name,sortOrder",
-      snapshots: "++id,createdAt,weekKey,reason,&weeklyKey",
-      settings: "&id",
-    });
+    super(name, { autoOpen: false });
+    this.version(1).stores(LEGACY_SCHEMA);
+    this.version(2)
+      .stores({
+        employers: "++id,&name,sortOrder",
+        payslips: "++id,&transactionId,employerId,payDate",
+      })
+      .upgrade(async (tx) => {
+        await captureMigrationBoundary(tx, "0.2.0");
+      });
   }
+  async prepareOpen(version = "0.2.0") {
+    if (this.isOpen()) return;
+    if (!this.opening)
+      this.opening = (async () => {
+        await protectBeforeMigration(this.name, version);
+        await this.open();
+      })().finally(() => {
+        this.opening = undefined;
+      });
+    await this.opening;
+  }
+
   tablesForWrite() {
     return [
       this.transactions,
@@ -47,16 +73,26 @@ export class BudgetDB extends Dexie {
       this.stores,
       this.snapshots,
       this.settings,
+      this.payslips,
+      this.employers,
     ];
   }
   async prefs(): Promise<Settings> {
-    return (await this.settings.get("preferences"))?.value ?? defaults();
+    return {
+      ...defaults(),
+      ...(await this.settings.get("preferences"))?.value,
+    };
   }
   async setPrefs(value: Settings) {
     await this.settings.put({ id: "preferences", value });
   }
   async state(): Promise<State> {
+    if (!this.isOpen()) await this.prepareOpen();
     return this.transaction("r", this.tablesForWrite(), async () => ({
+      payslips: await this.payslips.toArray(),
+      employers: (await this.employers.toArray()).sort(
+        (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+      ),
       entries: await this.transactions.toArray(),
       recurring: await this.recurringPayments.toArray(),
       stores: (await this.stores.toArray()).sort(
@@ -69,6 +105,7 @@ export class BudgetDB extends Dexie {
     }));
   }
   async initialize() {
+    await this.prepareOpen();
     await this.transaction("rw", this.tablesForWrite(), async () => {
       if (!(await this.settings.get("preferences"))) {
         if (!(await this.stores.count()))
@@ -86,13 +123,17 @@ export class BudgetDB extends Dexie {
   }
   async patchSettings(patch: Partial<Settings>) {
     await this.transaction("rw", this.settings, async () => {
+      if (patch.salaryTargets !== undefined)
+        patch.salaryTargets = validateSalaryTargets(patch.salaryTargets);
       await this.setPrefs({ ...(await this.prefs()), ...patch });
     });
   }
   async exportCore(version: string, now: string): Promise<CoreBackup> {
     return {
       format: "kakeibo-web",
-      schemaVersion: 1,
+      schemaVersion: 2,
+      payslips: await this.payslips.toArray(),
+      employers: await this.employers.toArray(),
       exportedAt: now,
       appVersion: version,
       transactions: await this.transactions.toArray(),
@@ -116,7 +157,7 @@ export class BudgetDB extends Dexie {
       .filter((s) => s.reason === "WEEKLY")
       .sort((a, b) => b.weekKey.localeCompare(a.weekKey));
     const other = all
-      .filter((s) => s.reason !== "WEEKLY")
+      .filter((s) => s.reason !== "WEEKLY" && s.reason !== "BEFORE_MIGRATION")
       .sort((a, b) =>
         a.id === preserveId
           ? -1
@@ -124,8 +165,13 @@ export class BudgetDB extends Dexie {
             ? 1
             : b.createdAt.localeCompare(a.createdAt),
       );
+    const migrations = all
+      .filter((s) => s.reason === "BEFORE_MIGRATION")
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     await this.snapshots.bulkDelete(
-      [...weekly.slice(8), ...other.slice(5)].map((s) => s.id!),
+      [...weekly.slice(8), ...other.slice(5), ...migrations.slice(5)].map(
+        (s) => s.id!,
+      ),
     );
   }
   async snapshotLocked(
@@ -316,8 +362,9 @@ export class BudgetDB extends Dexie {
     input: Entry,
     date = tokyoDate(),
     now = new Date().toISOString(),
+    payroll?: Payslip | null,
   ) {
-    await this.transaction("rw", this.tablesForWrite(), async () => {
+    return this.transaction("rw", this.tablesForWrite(), async () => {
       const prior = input.id
         ? await this.transactions.get(input.id)
         : undefined;
@@ -348,8 +395,42 @@ export class BudgetDB extends Dexie {
           await this.stores.get(e.storeId),
           "\u8cfc\u5165\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
         );
-      if (e.id) await this.transactions.put(e);
-      else await this.transactions.add(e);
+      const id = e.id
+        ? await this.transactions.put(e)
+        : await this.transactions.add(e);
+      const linked = await this.payslips
+        .where("transactionId")
+        .equals(id)
+        .first();
+      if (payroll === null) {
+        if (linked) await this.payslips.delete(linked.id!);
+      } else if (payroll !== undefined) {
+        requireValue(
+          e.type === "INCOME",
+          "\u7d66\u4e0e\u660e\u7d30\u306f\u5165\u91d1\u3060\u3051\u306b\u8ffd\u52a0\u3067\u304d\u307e\u3059\u3002",
+        );
+        requireValue(
+          !payroll.id || payroll.id === linked?.id,
+          "\u5225\u306e\u660e\u7d30\u3092\u4e0a\u66f8\u304d\u3067\u304d\u307e\u305b\u3093\u3002",
+        );
+        const slip = validatePayslip({
+          ...payroll,
+          id: linked?.id,
+          transactionId: id,
+          createdAt: linked?.createdAt ?? now,
+          updatedAt: now,
+        });
+        requireValue(
+          await this.employers.get(slip.employerId),
+          "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+        );
+        if (slip.id) await this.payslips.put(slip);
+        else await this.payslips.add(slip);
+      } else
+        requireValue(
+          !linked || e.type === "INCOME",
+          "\u7d66\u4e0e\u660e\u7d30\u306e\u7d10\u3065\u304f\u5165\u91d1\u306e\u5206\u985e\u306f\u5909\u66f4\u3067\u304d\u307e\u305b\u3093\u3002",
+        );
       if (e.paymentMethod === "MONTHLY" && !template)
         await this.recurringPayments.add({
           id: recurringId!,
@@ -364,10 +445,38 @@ export class BudgetDB extends Dexie {
       await this.generateLocked(date, now);
       safeSum((await this.transactions.toArray()).map((e) => e.amount));
       assets(await this.transactions.toArray());
+      safeSum(
+        (await this.payslips.toArray()).flatMap((p) =>
+          PAY_FIELDS.map((key) => p[key]),
+        ),
+      );
+      return id;
     });
   }
-  async deleteEntry(id: number) {
-    await this.transactions.delete(id);
+  async deleteEntry(id: number, disposition?: "DELETE" | "KEEP") {
+    await this.transaction(
+      "rw",
+      [this.transactions, this.payslips],
+      async () => {
+        const slip = await this.payslips
+          .where("transactionId")
+          .equals(id)
+          .first();
+        if (slip) {
+          requireValue(
+            disposition,
+            "\u660e\u7d30\u3082\u524a\u9664\u3059\u308b\u304b\u3001\u660e\u7d30\u3060\u3051\u6b8b\u3059\u304b\u3092\u9078\u3093\u3067\u304f\u3060\u3055\u3044\u3002",
+          );
+          if (disposition === "DELETE") await this.payslips.delete(slip.id!);
+          else
+            await this.payslips.update(slip.id!, {
+              transactionId: null,
+              updatedAt: new Date().toISOString(),
+            });
+        }
+        await this.transactions.delete(id);
+      },
+    );
   }
   async changePrice(
     id: string,
@@ -411,6 +520,108 @@ export class BudgetDB extends Dexie {
         .modify({ paymentMethod: "MONTHLY_ENDED", updatedAt: now });
     });
   }
+  async addEmployer(rawName: string): Promise<number> {
+    const name = rawName.trim();
+    requireValue(
+      name.length > 0 && name.length <= 200,
+      "\u52e4\u52d9\u5148\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
+    );
+    return this.transaction("rw", this.employers, async () => {
+      const existing = await this.employers.where("name").equals(name).first();
+      if (existing) return existing.id!;
+      const rows = await this.employers.toArray();
+      return this.employers.add({
+        name,
+        sortOrder: Math.max(-1, ...rows.map((e) => e.sortOrder)) + 1,
+        hidden: false,
+      });
+    });
+  }
+  async renameEmployer(id: number, rawName: string) {
+    const name = rawName.trim();
+    requireValue(
+      name.length > 0 && name.length <= 200,
+      "\u52e4\u52d9\u5148\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
+    );
+    await this.transaction("rw", this.employers, async () => {
+      const duplicate = await this.employers.where("name").equals(name).first();
+      requireValue(
+        !duplicate || duplicate.id === id,
+        "\u540c\u3058\u540d\u524d\u306e\u52e4\u52d9\u5148\u304c\u3042\u308a\u307e\u3059\u3002",
+      );
+      requireValue(
+        await this.employers.get(id),
+        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+      );
+      await this.employers.update(id, { name });
+    });
+  }
+  async moveEmployer(id: number, direction: -1 | 1) {
+    await this.transaction("rw", this.employers, async () => {
+      const rows = (await this.employers.toArray()).sort(
+        (a, b) => a.sortOrder - b.sortOrder,
+      );
+      const i = rows.findIndex((e) => e.id === id);
+      const other = rows[i + direction];
+      if (i < 0 || !other) return;
+      await this.employers.update(id, { sortOrder: other.sortOrder });
+      await this.employers.update(other.id!, { sortOrder: rows[i].sortOrder });
+    });
+  }
+  async toggleEmployer(id: number) {
+    await this.transaction("rw", this.employers, async () => {
+      const row = await this.employers.get(id);
+      requireValue(
+        row,
+        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+      );
+      await this.employers.update(id, { hidden: !row.hidden });
+    });
+  }
+  async deleteEmployer(id: number) {
+    await this.transaction("rw", [this.employers, this.payslips], async () => {
+      requireValue(
+        !(await this.payslips.where("employerId").equals(id).count()),
+        "\u660e\u7d30\u3067\u4f7f\u7528\u4e2d\u3067\u3059\u3002\u524a\u9664\u305b\u305a\u975e\u8868\u793a\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+      );
+      await this.employers.delete(id);
+    });
+  }
+  async saveStandalonePayslip(input: Payslip, now = new Date().toISOString()) {
+    return this.transaction("rw", [this.payslips, this.employers], async () => {
+      const prior = input.id ? await this.payslips.get(input.id) : undefined;
+      requireValue(
+        !input.id || prior,
+        "\u660e\u7d30\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+      );
+      requireValue(
+        !prior || prior.transactionId === null,
+        "\u95a2\u9023\u3059\u308b\u5165\u91d1\u306e\u753b\u9762\u3067\u7de8\u96c6\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+      );
+      const slip = validatePayslip({
+        ...input,
+        transactionId: null,
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+      });
+      requireValue(
+        await this.employers.get(slip.employerId),
+        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+      );
+      const id = slip.id
+        ? await this.payslips.put(slip)
+        : await this.payslips.add(slip);
+      safeSum(
+        (await this.payslips.toArray()).flatMap((p) =>
+          PAY_FIELDS.map((key) => p[key]),
+        ),
+      );
+      return id;
+    });
+  }
+  async deletePayslip(id: number) {
+    await this.payslips.delete(id);
+  }
   async replace(
     input: Backup,
     version: string,
@@ -427,9 +638,13 @@ export class BudgetDB extends Dexie {
         date,
         now,
       );
+      await this.payslips.clear();
+      await this.employers.clear();
       await this.transactions.clear();
       await this.recurringPayments.clear();
       await this.stores.clear();
+      await this.employers.bulkAdd(core.employers ?? []);
+      await this.payslips.bulkAdd(core.payslips ?? []);
       await this.stores.bulkAdd(core.stores);
       await this.recurringPayments.bulkAdd(core.recurringPayments);
       await this.transactions.bulkAdd(

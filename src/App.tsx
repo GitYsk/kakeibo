@@ -1,3 +1,15 @@
+import { Modal } from "./Modal.tsx";
+import {
+  PayslipFields,
+  StandalonePayslipEditor,
+  PayrollYear,
+  PayrollSettings,
+  RecoveryScreen,
+  slipDraft,
+  readSlipDraft,
+  type SlipDraft,
+} from "./PayrollUI.tsx";
+import { recoveryBackup } from "./migration.ts";
 import "./style.css";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { liveQuery } from "dexie";
@@ -28,6 +40,10 @@ import {
   type Snapshot,
   type State,
   type Store,
+  type Payslip,
+  type Employer,
+  payslipTotals,
+  validDate,
 } from "./core.ts";
 import { beginSave, prepareBackup, type Prepared } from "./backup.ts";
 import { registerUpdates, type UpdateAPI } from "./updates.ts";
@@ -56,7 +72,18 @@ const confirmedTime = (p: Prepared) =>
   weekKey(tokyoDate(new Date(p.backup.exportedAt))) === weekKey(tokyoDate())
     ? new Date().toISOString()
     : p.backup.exportedAt;
+function backupPeriod(backup: Backup) {
+  const dates = [
+    ...backup.transactions.map((e) => e.date),
+    ...(backup.payslips ?? []).map((p) => p.payDate),
+  ].sort();
+  return dates.length
+    ? dates[0] + " \uff5e " + dates.at(-1)
+    : "\u8a18\u9332\u306a\u3057";
+}
 const empty: State = {
+  payslips: [],
+  employers: [],
   entries: [],
   recurring: [],
   stores: [],
@@ -87,45 +114,6 @@ function Icon({ name }: { name: string }) {
     >
       <path d={paths[name] ?? paths.records} />
     </svg>
-  );
-}
-function Modal({
-  title,
-  children,
-  onClose,
-  actions,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  actions?: ReactNode;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
-    return () => ref.current?.close();
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-    >
-      <div className="modal-head">
-        <h2>{title}</h2>
-        <button
-          className="icon-button"
-          aria-label={"\u9589\u3058\u308b"}
-          onClick={onClose}
-        >
-          <Icon name="close" />
-        </button>
-      </div>
-      <div className="modal-body">{children}</div>
-      {actions && <div className="modal-actions">{actions}</div>}
-    </dialog>
   );
 }
 function Summary({ value }: { value: ReturnType<typeof totals> }) {
@@ -248,14 +236,18 @@ interface Draft {
 function Editor({
   original,
   stores,
+  employers,
+  originalPayslip,
   onClose,
   onSave,
   onError,
 }: {
   original: Entry | null;
   stores: Store[];
+  employers: Employer[];
+  originalPayslip?: Payslip;
   onClose: () => void;
-  onSave: (e: Entry) => Promise<void>;
+  onSave: (e: Entry, payroll?: Payslip | null) => Promise<void>;
   onError: (m: string) => void;
 }) {
   const [draft, setDraft] = useState<Draft>(
@@ -279,12 +271,44 @@ function Editor({
           updatedAt: "",
         },
   );
+  const [payrollEnabled, setPayrollEnabled] = useState(!!originalPayslip);
+  const [payrollDraft, setPayrollDraft] = useState<SlipDraft>(() =>
+    slipDraft(originalPayslip ?? undefined),
+  );
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const update = (field: keyof Draft, value: string) =>
+  const update = (field: keyof Draft, value: string) => {
+    if (
+      field === "type" &&
+      value !== "INCOME" &&
+      originalPayslip &&
+      payrollEnabled
+    ) {
+      if (
+        !confirm(
+          "\u5206\u985e\u3092\u5909\u66f4\u3059\u308b\u3068\u3001\u4fdd\u5b58\u6642\u306b\u7d66\u4e0e\u660e\u7d30\u3092\u524a\u9664\u3057\u307e\u3059\u3002\u3088\u308d\u3057\u3044\u3067\u3059\u304b\uff1f",
+        )
+      )
+        return;
+      setPayrollEnabled(false);
+    } else if (field === "type" && value !== "INCOME") setPayrollEnabled(false);
+    if (
+      field === "date" &&
+      !originalPayslip &&
+      payrollDraft.payDate === draft.date &&
+      validDate(value)
+    )
+      setPayrollDraft((p) => ({
+        ...p,
+        payDate: value,
+        workPeriod: !p.periodTouched
+          ? addMonths(value.slice(0, 7), -1)
+          : p.workPeriod,
+      }));
     setDraft((d) => ({ ...d, [field]: value }));
+  };
   const monthly =
     draft.paymentMethod === "MONTHLY" ||
     draft.paymentMethod === "MONTHLY_ENDED";
@@ -296,12 +320,19 @@ function Editor({
         throw new Error(
           "\u91d1\u984d\u3068\u5206\u5272\u56de\u6570\u306f\u6574\u6570\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
         );
-      await onSave({
-        ...draft,
-        amount: Number(draft.amount),
-        installments: Number(draft.installments),
-        storeId: draft.storeId ? Number(draft.storeId) : null,
-      });
+      await onSave(
+        {
+          ...draft,
+          amount: Number(draft.amount),
+          installments: Number(draft.installments),
+          storeId: draft.storeId ? Number(draft.storeId) : null,
+        },
+        draft.type === "INCOME" && payrollEnabled
+          ? readSlipDraft(payrollDraft)
+          : originalPayslip
+            ? null
+            : undefined,
+      );
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -483,6 +514,49 @@ function Editor({
           <p role="alert" className="error">
             {error}
           </p>
+        )}
+        {draft.type === "INCOME" && (
+          <>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={payrollEnabled}
+                onChange={(e) => {
+                  if (
+                    !e.target.checked &&
+                    originalPayslip &&
+                    !confirm(
+                      "\u4fdd\u5b58\u6642\u306b\u3053\u306e\u7d66\u4e0e\u660e\u7d30\u3092\u524a\u9664\u3057\u307e\u3059\u3002\u5165\u91d1\u8a18\u9332\u306f\u6b8b\u308a\u307e\u3059\u3002\u3088\u308d\u3057\u3044\u3067\u3059\u304b\uff1f",
+                    )
+                  )
+                    return;
+                  setPayrollEnabled(e.target.checked);
+                  if (
+                    e.target.checked &&
+                    !originalPayslip &&
+                    validDate(draft.date)
+                  )
+                    setPayrollDraft((p) => ({
+                      ...p,
+                      payDate: draft.date,
+                      workPeriod: addMonths(draft.date.slice(0, 7), -1),
+                    }));
+                }}
+              />
+              {"\u7d66\u4e0e\u660e\u7d30\u3092\u5165\u529b\u3059\u308b"}
+            </label>
+            {payrollEnabled && (
+              <PayslipFields
+                draft={payrollDraft}
+                onChange={setPayrollDraft}
+                employers={employers}
+                incomeAmount={
+                  /^\d+$/.test(draft.amount) ? Number(draft.amount) : null
+                }
+                onMatch={(n) => update("amount", String(n))}
+              />
+            )}
+          </>
         )}
       </form>
     </Modal>
@@ -938,6 +1012,7 @@ function SettingsView({
   onError: (s: string) => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const [payrollBusy, setPayrollBusy] = useState(false);
   const [storeDraft, setStoreDraft] = useState("");
   const [renaming, setRenaming] = useState<Store | null>(null);
   const [rename, setRename] = useState("");
@@ -952,18 +1027,28 @@ function SettingsView({
       .catch(() => undefined);
   }, [state.snapshots.length]);
   useEffect(() => {
-    onBusy(!!renaming || !!price);
+    onBusy(!!renaming || !!price || payrollBusy);
     return () => onBusy(false);
-  }, [renaming, price]);
+  }, [renaming, price, payrollBusy]);
   const run = (job: () => Promise<unknown>) => {
     void job().catch((e) => onError(errorText(e)));
   };
   return (
     <>
+      <PayrollSettings
+        state={state}
+        onBusy={setPayrollBusy}
+        onError={onError}
+      />
       <section className="panel">
         <h2>{"\u30d0\u30c3\u30af\u30a2\u30c3\u30d7"}</h2>
         <p className="note">
           {"\u6700\u7d42\u4fdd\u5b58: " + stamp(state.settings.lastExportAt)}
+        </p>
+        <p className="note">
+          {"\u4fdd\u5b58\u65b9\u6cd5: " +
+            (state.settings.lastExportMethod ||
+              "\u307e\u3060\u4fdd\u5b58\u3057\u3066\u3044\u307e\u305b\u3093")}
         </p>
         <button className="primary wide" onClick={onSave}>
           <Icon name="download" />
@@ -1211,9 +1296,11 @@ function SettingsView({
             <p className="muted">
               {(s.reason === "WEEKLY"
                 ? "\u9031\u6b21"
-                : s.reason === "MANUAL"
-                  ? "\u624b\u52d5"
-                  : "\u8aad\u307f\u8fbc\u307f\u524d") +
+                : s.reason === "BEFORE_MIGRATION"
+                  ? "\u66f4\u65b0\u524d"
+                  : s.reason === "MANUAL"
+                    ? "\u624b\u52d5"
+                    : "\u8aad\u307f\u8fbc\u307f\u524d") +
                 " \u00b7 " +
                 s.data.transactions.length +
                 "\u4ef6"}
@@ -1351,6 +1438,7 @@ type Overlay =
       blank: number;
       source: string;
     }
+  | { kind: "delete-entry"; entry: Entry }
   | { kind: "restore"; snapshot: Snapshot }
   | null;
 type Tab = "home" | "records" | "month" | "year" | "settings";
@@ -1363,6 +1451,11 @@ export function App() {
   const [year, setYear] = useState(Number(tokyoDate().slice(0, 4)));
   const [editor, setEditor] = useState<{ entry: Entry | null } | null>(null);
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [standalone, setStandalone] = useState<{ slip: Payslip | null } | null>(
+    null,
+  );
+  const [recordIds, setRecordIds] = useState<Set<number> | null>(null);
+  const [recovery, setRecovery] = useState<Prepared | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -1373,7 +1466,8 @@ export function App() {
   const stateRef = useRef(state);
   stateRef.current = state;
   const blocked = useRef(true);
-  blocked.current = !!editor || !!overlay || settingsBusy || saving;
+  blocked.current =
+    !!editor || !!standalone || !!overlay || settingsBusy || saving;
   const pending = useRef(false);
   const claiming = useRef(false);
   const activation = useRef(0);
@@ -1382,7 +1476,9 @@ export function App() {
     try {
       return prepareBackup({
         format: "kakeibo-web",
-        schemaVersion: 1,
+        schemaVersion: 2,
+        payslips: state.payslips,
+        employers: state.employers,
         exportedAt: new Date().toISOString(),
         appVersion: VERSION,
         transactions: state.entries,
@@ -1426,20 +1522,39 @@ export function App() {
   };
   useEffect(() => {
     let alive = true;
-    const subscription = liveQuery(() => db.state()).subscribe({
-      next: (value) => {
-        if (alive) setState(value);
-      },
-      error: (e) => {
-        if (alive) setFatal(errorText(e));
-      },
-    });
+    const blockedOpen = () =>
+      setMessage(
+        "\u66f4\u65b0\u306e\u305f\u3081\u3001\u4ed6\u306e\u5bb6\u8a08\u7c3f\u30bf\u30d6\u3092\u9589\u3058\u3066\u304f\u3060\u3055\u3044\u3002\u30d6\u30e9\u30a6\u30b6\u306e\u30c7\u30fc\u30bf\u306f\u6d88\u53bb\u3057\u306a\u3044\u3067\u304f\u3060\u3055\u3044\u3002",
+      );
+    db.on("blocked", blockedOpen);
+    let subscription: { unsubscribe: () => void } | undefined;
+    const observe = () => {
+      if (subscription) return;
+      subscription = liveQuery(() => db.state()).subscribe({
+        next: (value) => {
+          if (alive) {
+            setState(value);
+            setReady(true);
+          }
+        },
+        error: (e) => {
+          if (alive) {
+            setFatal(errorText(e));
+            void recoveryBackup(db.name, VERSION)
+              .then((data) => {
+                if (alive && data) setRecovery(prepareBackup(data, false));
+              })
+              .catch(() => undefined);
+          }
+        },
+      });
+    };
     const activate = async () => {
       const id = ++activation.current;
       try {
         await db.startup(VERSION);
         if (!alive) return;
-        setReady(true);
+        observe();
         pending.current = true;
         if (id === activation.current) void tryReminder();
         const prefs = await db.prefs();
@@ -1457,7 +1572,14 @@ export function App() {
         }
         await updateAPI.current?.check();
       } catch (e) {
-        if (alive) setFatal(errorText(e));
+        if (alive) {
+          setFatal(errorText(e));
+          void recoveryBackup(db.name, VERSION)
+            .then((data) => {
+              if (alive && data) setRecovery(prepareBackup(data, false));
+            })
+            .catch(() => undefined);
+        }
       }
     };
     updateAPI.current = registerUpdates(
@@ -1474,15 +1596,17 @@ export function App() {
     void activate();
     return () => {
       alive = false;
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
+      db.on.blocked.unsubscribe(blockedOpen);
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("online", connected);
       window.removeEventListener("offline", connected);
     };
   }, []);
   useEffect(() => {
-    if (!editor && !overlay && !settingsBusy && !saving) void tryReminder();
-  }, [editor, overlay, settingsBusy, saving]);
+    if (!editor && !standalone && !overlay && !settingsBusy && !saving)
+      void tryReminder();
+  }, [editor, standalone, overlay, settingsBusy, saving]);
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(""), 12000);
@@ -1603,7 +1727,13 @@ export function App() {
     }
   };
   const downloadSafety = () => {
-    if (state.entries.length && prepared) {
+    if (
+      (state.entries.length ||
+        state.payslips.length ||
+        state.employers.length ||
+        state.settings.salaryTargets.length) &&
+      prepared
+    ) {
       const url = URL.createObjectURL(prepared.blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1629,6 +1759,10 @@ export function App() {
   };
   const edit = (entry: Entry) => setEditor({ entry });
   const remove = (entry: Entry) => {
+    if (state.payslips.some((p) => p.transactionId === entry.id)) {
+      setOverlay({ kind: "delete-entry", entry });
+      return;
+    }
     if (
       confirm(
         "\u300c" +
@@ -1638,6 +1772,15 @@ export function App() {
     )
       void db.deleteEntry(entry.id!).catch((e) => error(errorText(e)));
   };
+  const editPayslip = (p: Payslip) => {
+    const entry = state.entries.find((e) => e.id === p.transactionId);
+    if (entry) setEditor({ entry });
+    else setStandalone({ slip: p });
+  };
+  const salaryMissing = (entries: Entry[]) => {
+    setRecordIds(new Set(entries.map((e) => e.id!)));
+    setTab("records");
+  };
   const labels: Record<Tab, string> = {
     home: "\u30db\u30fc\u30e0",
     records: "\u8a18\u9332",
@@ -1645,25 +1788,7 @@ export function App() {
     year: "\u5e74\u9593",
     settings: "\u8a2d\u5b9a",
   };
-  if (fatal)
-    return (
-      <main className="app fatal">
-        <h1>
-          {
-            "\u5bb6\u8a08\u7c3f\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f"
-          }
-        </h1>
-        <p>{fatal}</p>
-        <p>
-          {
-            "\u30d6\u30e9\u30a6\u30b6\u306e\u30c7\u30fc\u30bf\u3092\u6d88\u3059\u524d\u306b\u3001\u4fdd\u5b58\u6e08\u307f\u306e\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u3092\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
-          }
-        </p>
-        <button onClick={() => location.reload()}>
-          {"\u3082\u3046\u4e00\u5ea6\u958b\u304f"}
-        </button>
-      </main>
-    );
+  if (fatal) return <RecoveryScreen message={fatal} prepared={recovery} />;
   return (
     <div className="app">
       <header className="topbar">
@@ -1701,7 +1826,9 @@ export function App() {
             </p>
             <button
               className="primary"
-              disabled={!!editor || settingsBusy || saving || !!overlay}
+              disabled={
+                !!editor || !!standalone || settingsBusy || saving || !!overlay
+              }
               onClick={() => updateAPI.current?.apply()}
             >
               {"\u66f4\u65b0\u3059\u308b"}
@@ -1838,10 +1965,41 @@ export function App() {
                     ? "\u30aa\u30d5\u30e9\u30a4\u30f3\u3067\u5229\u7528\u3067\u304d\u307e\u3059"
                     : "\u30c7\u30fc\u30bf\u306f\u3053\u306e\u30d6\u30e9\u30a6\u30b6\u306b\u4fdd\u5b58\u3055\u308c\u307e\u3059"}
                 </p>
+                <p className="footer-note">{"v" + VERSION}</p>
               </>
             )}
             {tab === "records" && (
-              <Records state={state} onEdit={edit} onDelete={remove} />
+              <>
+                {recordIds && (
+                  <div className="notice">
+                    <p>
+                      {
+                        "\u7d66\u4e0e\u660e\u7d30\u304c\u306a\u3044\u53ef\u80fd\u6027\u306e\u3042\u308b\u5165\u91d1\u3092\u8868\u793a\u3057\u3066\u3044\u307e\u3059\u3002"
+                      }
+                    </p>
+                    <button
+                      className="secondary wide"
+                      onClick={() => setRecordIds(null)}
+                    >
+                      {"\u3059\u3079\u3066\u306e\u8a18\u9332\u306b\u623b\u308b"}
+                    </button>
+                  </div>
+                )}
+                <Records
+                  state={
+                    recordIds
+                      ? {
+                          ...state,
+                          entries: state.entries.filter((e) =>
+                            recordIds.has(e.id!),
+                          ),
+                        }
+                      : state
+                  }
+                  onEdit={edit}
+                  onDelete={remove}
+                />
+              </>
             )}
             {tab === "month" && (
               <Month
@@ -1853,15 +2011,25 @@ export function App() {
               />
             )}
             {tab === "year" && (
-              <Year
-                state={state}
-                year={year}
-                setYear={setYear}
-                onMonth={(m) => {
-                  setMonth(m);
-                  setTab("month");
-                }}
-              />
+              <>
+                {" "}
+                <Year
+                  state={state}
+                  year={year}
+                  setYear={setYear}
+                  onMonth={(m) => {
+                    setMonth(m);
+                    setTab("month");
+                  }}
+                />
+                <PayrollYear
+                  state={state}
+                  year={year}
+                  onNew={() => setStandalone({ slip: null })}
+                  onEdit={editPayslip}
+                  onMissing={salaryMissing}
+                />
+              </>
             )}
             {tab === "settings" && (
               <SettingsView
@@ -1902,7 +2070,10 @@ export function App() {
               key={t}
               aria-current={tab === t ? "page" : undefined}
               className={tab === t ? "active" : ""}
-              onClick={() => setTab(t)}
+              onClick={() => {
+                setTab(t);
+                if (t === "records") setRecordIds(null);
+              }}
             >
               <Icon name={t} />
               <span>{labels[t]}</span>
@@ -1923,15 +2094,66 @@ export function App() {
           </button>
         </div>
       )}
+      {standalone && (
+        <StandalonePayslipEditor
+          original={standalone.slip}
+          employers={state.employers}
+          onClose={() => setStandalone(null)}
+          onError={error}
+        />
+      )}
+      {overlay?.kind === "delete-entry" && (
+        <Modal
+          title={"\u5165\u91d1\u3068\u7d66\u4e0e\u660e\u7d30\u306e\u524a\u9664"}
+          onClose={() => setOverlay(null)}
+        >
+          <p>
+            {
+              "\u5165\u91d1\u3092\u524a\u9664\u3059\u308b\u3068\u304d\u3001\u7d66\u4e0e\u660e\u7d30\u3092\u3069\u3046\u3057\u307e\u3059\u304b\uff1f \u660e\u7d30\u3060\u3051\u6b8b\u3059\u5834\u5408\u3001\u7dcf\u8cc7\u7523\u3068\u6708\u9593\u53ce\u5165\u304b\u3089\u5165\u91d1\u304c\u9664\u304b\u308c\u3001\u5e74\u9593\u7d66\u4e0e\u306b\u306f\u660e\u7d30\u304c\u6b8b\u308a\u307e\u3059\u3002"
+            }
+          </p>
+          <div className="stack">
+            <button
+              className="secondary"
+              onClick={() =>
+                void db
+                  .deleteEntry(overlay.entry.id!, "KEEP")
+                  .then(() => setOverlay(null))
+                  .catch((e) => error(errorText(e)))
+              }
+            >
+              {"\u660e\u7d30\u3060\u3051\u6b8b\u3059"}
+            </button>
+            <button
+              className="danger-text"
+              onClick={() =>
+                void db
+                  .deleteEntry(overlay.entry.id!, "DELETE")
+                  .then(() => setOverlay(null))
+                  .catch((e) => error(errorText(e)))
+              }
+            >
+              {"\u660e\u7d30\u3082\u524a\u9664\u3059\u308b"}
+            </button>
+            <button className="secondary" onClick={() => setOverlay(null)}>
+              {"\u30ad\u30e3\u30f3\u30bb\u30eb"}
+            </button>
+          </div>
+        </Modal>
+      )}
       {editor && (
         <Editor
           key={editor.entry?.id ?? "new"}
           original={editor.entry}
           stores={state.stores}
+          employers={state.employers}
+          originalPayslip={state.payslips.find(
+            (p) => p.transactionId === editor.entry?.id,
+          )}
           onClose={() => setEditor(null)}
           onError={error}
-          onSave={async (e) => {
-            await db.saveEntry(e);
+          onSave={async (e, payroll) => {
+            await db.saveEntry(e, undefined, undefined, payroll);
             setEditor(null);
             error(
               "\u8a18\u9332\u3092\u4fdd\u5b58\u3057\u307e\u3057\u305f\u3002",
@@ -2098,6 +2320,12 @@ export function App() {
             <dd>{overlay.source}</dd>
             <dt>{"\u8a18\u9332"}</dt>
             <dd>{overlay.backup.transactions.length + "\u4ef6"}</dd>
+            <dt>{"\u671f\u9593"}</dt>
+            <dd>{backupPeriod(overlay.backup)}</dd>
+            <dt>{"\u7d66\u4e0e\u660e\u7d30"}</dt>
+            <dd>{(overlay.backup.payslips?.length ?? 0) + "\u4ef6"}</dd>
+            <dt>{"\u52e4\u52d9\u5148"}</dt>
+            <dd>{(overlay.backup.employers?.length ?? 0) + "\u4ef6"}</dd>
             <dt>{"\u7dcf\u8cc7\u7523"}</dt>
             <dd>{yen(assets(overlay.backup.transactions))}</dd>
             <dt>{"\u5b9a\u671f\u652f\u6255"}</dt>
@@ -2107,6 +2335,13 @@ export function App() {
             <dt>{"\u8aad\u307f\u8fbc\u3081\u306a\u3044\u884c"}</dt>
             <dd>{overlay.skipped.length + "\u884c"}</dd>
           </dl>
+          {overlay.backup.schemaVersion === 1 && (
+            <p className="notice">
+              {
+                "\u3053\u306e\u30d5\u30a1\u30a4\u30eb\u306b\u7d66\u4e0e\u660e\u7d30\u30fb\u52e4\u52d9\u5148\u30fb\u76ee\u5b89\u984d\u306f\u542b\u307e\u308c\u307e\u305b\u3093\u3002\u73fe\u5728\u306e\u7d66\u4e0e\u30c7\u30fc\u30bf\u3082\u7f6e\u304d\u63db\u308f\u308a\u307e\u3059\u3002\u5fc5\u8981\u306a\u3089\u5148\u306bJSON\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
+              }
+            </p>
+          )}
           {overlay.skipped.length > 0 && (
             <details open>
               <summary>
