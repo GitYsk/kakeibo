@@ -9,6 +9,7 @@ export interface Entry {
   amount: number;
   description: string;
   storeId: number | null;
+  incomeSourceId?: number | null;
   installments: number;
   paymentMethod: Payment;
   recurringId: string | null;
@@ -49,14 +50,14 @@ export interface Settings {
 }
 export interface CoreBackup {
   format: "kakeibo-web";
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   exportedAt: string;
   appVersion: string;
   transactions: Entry[];
   recurringPayments: Recurring[];
   stores: Store[];
   payslips?: Payslip[];
-  employers?: Employer[];
+  incomeSources?: IncomeSource[];
   settings: Settings;
 }
 export interface Snapshot {
@@ -72,7 +73,7 @@ export interface Backup extends CoreBackup {
 }
 export interface State {
   payslips: Payslip[];
-  employers: Employer[];
+  incomeSources: IncomeSource[];
   entries: Entry[];
   recurring: Recurring[];
   stores: Store[];
@@ -408,6 +409,7 @@ export interface CsvResult {
   transactions: Entry[];
   recurringPayments: Recurring[];
   stores: Store[];
+  incomeSources: IncomeSource[];
   skipped: { row: number; reason: string }[];
   blankRows: number;
 }
@@ -423,6 +425,7 @@ export function importCsv(
   );
   const transactions: Entry[] = [];
   const stores: Store[] = [];
+  const incomeSources: IncomeSource[] = [];
   const skipped: CsvResult["skipped"] = [];
   let blankRows = 0;
   const typeMap = new Map(TYPES.map((t) => [TYPE_LABEL[t], t]));
@@ -456,13 +459,30 @@ export function importCsv(
         "\u91d1\u984d\u306f\u5186\u5358\u4f4d\u306e\u6574\u6570\u3067\u3059\u3002",
       );
       const type = typeMap.get(col(1));
-      const paymentMethod = paymentMap.get(col(8));
+      const paymentMethod = type === "INCOME" ? "NOW" : paymentMap.get(col(8));
       requireValue(type, "\u5206\u985e\u304c\u4e0d\u660e\u3067\u3059\u3002");
       requireValue(
         paymentMethod,
         "\u652f\u6255\u65b9\u6cd5\u304c\u4e0d\u660e\u3067\u3059\u3002",
       );
-      const name = col(4);
+      const name =
+        type === "EXPENSE" || type === "ADJUST_EXPENSE" ? col(4) : "";
+      const sourceName =
+        type === "INCOME"
+          ? col(4) && col(4) !== "\u305d\u306e\u4ed6"
+            ? col(4)
+            : col(3)
+          : "";
+      let source = incomeSources.find((s) => s.name === sourceName);
+      if (sourceName && !source) {
+        source = {
+          id: incomeSources.length + 1,
+          name: sourceName,
+          sortOrder: incomeSources.length,
+          hidden: false,
+        };
+        incomeSources.push(source);
+      }
       let store = stores.find((s) => s.name === name);
       if (name && !store) {
         store = {
@@ -478,11 +498,15 @@ export function importCsv(
         date: `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`,
         type,
         amount: Number(clean),
-        description: col(3),
+        description:
+          type === "INCOME" && (!col(4) || col(4) === "\u305d\u306e\u4ed6")
+            ? ""
+            : col(3),
+        incomeSourceId: source?.id ?? null,
         storeId: name ? store!.id! : null,
-        installments: col(5) ? Number(col(5)) : 1,
+        installments: type === "INCOME" ? 1 : col(5) ? Number(col(5)) : 1,
         paymentMethod,
-        recurringId: col(9) || null,
+        recurringId: type === "INCOME" ? null : col(9) || null,
         createdAt: now,
         updatedAt: now,
       };
@@ -528,15 +552,26 @@ export function importCsv(
   });
   safeSum(transactions.map((e) => e.amount));
   assets(transactions);
-  return { transactions, recurringPayments, stores, skipped, blankRows };
+  return {
+    transactions,
+    recurringPayments,
+    stores,
+    incomeSources,
+    skipped,
+    blankRows,
+  };
 }
-export function exportCsv(entries: Entry[], stores: Store[]): string {
+export function exportCsv(
+  entries: Entry[],
+  stores: Store[],
+  incomeSources: IncomeSource[] = [],
+): string {
   const escape = (v: string) =>
     '"' +
     (/^[\s]*[=+\-@\t\r]/.test(v) ? "'" + v : v).replaceAll('"', '""') +
     '"';
   return (
-    "\uFEFFDate,Category,AmountYen,Description,Store,Installments,Payment,RecurringId\r\n" +
+    "\uFEFFDate,Category,AmountYen,Description,Store,Installments,Payment,RecurringId,IncomeSource\r\n" +
     entries
       .map((e) =>
         [
@@ -548,6 +583,7 @@ export function exportCsv(entries: Entry[], stores: Store[]): string {
           String(e.installments),
           e.paymentMethod,
           e.recurringId ?? "",
+          incomeSources.find((s) => s.id === e.incomeSourceId)?.name ?? "",
         ]
           .map(escape)
           .join(","),
@@ -574,9 +610,17 @@ const iso = (value: unknown) =>
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value) &&
   Number.isFinite(Date.parse(value));
 export function validateCore(raw: unknown): CoreBackup {
-  const o = object(raw);
+  let o = object(raw);
+  if (o.schemaVersion === 2) {
+    const sources = o.incomeSources ?? o.employers ?? [];
+    const slips = (o.payslips ?? []).map((p: any) => {
+      const { employerId, ...rest } = p;
+      return { ...rest, incomeSourceId: p.incomeSourceId ?? employerId };
+    });
+    o = { ...o, incomeSources: sources, payslips: slips };
+  }
   requireValue(
-    o.format === "kakeibo-web" && [1, 2].includes(o.schemaVersion),
+    o.format === "kakeibo-web" && [1, 2, 3].includes(o.schemaVersion),
     "\u5bfe\u5fdc\u3057\u3066\u3044\u306a\u3044\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u5f62\u5f0f\u3067\u3059\u3002",
   );
   requireValue(
@@ -635,6 +679,11 @@ export function validateCore(raw: unknown): CoreBackup {
       amount: e.amount,
       description: e.description,
       storeId: e.storeId,
+      incomeSourceId:
+        e.incomeSourceId ??
+        (o.payslips ?? []).find((p: any) => p.transactionId === e.id)
+          ?.incomeSourceId ??
+        null,
       installments: e.installments,
       paymentMethod: e.paymentMethod,
       recurringId: e.recurringId,
@@ -729,7 +778,7 @@ export function validateCore(raw: unknown): CoreBackup {
     remindersEnabled: s.remindersEnabled,
     reminderDay: s.reminderDay,
     salaryTargets:
-      o.schemaVersion === 2 ? validateSalaryTargets(s.salaryTargets ?? []) : [],
+      o.schemaVersion >= 2 ? validateSalaryTargets(s.salaryTargets ?? []) : [],
   };
   requireValue(
     settings.lastExportAt === null || iso(settings.lastExportAt),
@@ -742,10 +791,19 @@ export function validateCore(raw: unknown): CoreBackup {
       settings.reminderDay <= 6,
     "\u6848\u5185\u8a2d\u5b9a\u304c\u4e0d\u6b63\u3067\u3059\u3002",
   );
-  const employers = o.schemaVersion === 2 ? validateEmployers(o.employers) : [];
+  const incomeSources =
+    o.schemaVersion >= 2 ? validateIncomeSources(o.incomeSources) : [];
+  requireValue(
+    transactions.every(
+      (e) =>
+        e.incomeSourceId === null ||
+        incomeSources.some((s) => s.id === e.incomeSourceId),
+    ),
+    "Unknown income source",
+  );
   const payslips =
-    o.schemaVersion === 2
-      ? validatePayroll(o.payslips, employers, transactions)
+    o.schemaVersion >= 2
+      ? validatePayroll(o.payslips, incomeSources, transactions)
       : [];
   settings.reminderWeek = "";
   settings.reminderCount = 0;
@@ -755,9 +813,9 @@ export function validateCore(raw: unknown): CoreBackup {
   assets(transactions);
   return {
     format: "kakeibo-web",
-    schemaVersion: o.schemaVersion,
+    schemaVersion: 3,
     payslips,
-    employers,
+    incomeSources,
     exportedAt: o.exportedAt,
     appVersion: typeof o.appVersion === "string" ? o.appVersion : "unknown",
     transactions,
@@ -814,7 +872,7 @@ export function parseBackup(text: string): Backup {
   return { ...core, snapshots };
 }
 
-export type Employer = Store;
+export type IncomeSource = Store;
 export interface SalaryTarget {
   id: string;
   name: string;
@@ -823,7 +881,7 @@ export interface SalaryTarget {
 export interface Payslip {
   id?: number;
   transactionId: number | null;
-  employerId: number;
+  incomeSourceId: number;
   payDate: string;
   workPeriod: string;
   basePay: number;
@@ -873,7 +931,7 @@ export const PAY_LABEL: Record<PayField, string> = {
 export function emptyPayslip(date = tokyoDate()): Payslip {
   return {
     transactionId: null,
-    employerId: 0,
+    incomeSourceId: 0,
     payDate: date,
     workPeriod: addMonths(date.slice(0, 7), -1),
     basePay: 0,
@@ -927,8 +985,8 @@ export function validatePayslip(input: Payslip): Payslip {
     "\u5165\u91d1\u306e\u53c2\u7167\u304c\u4e0d\u6b63\u3067\u3059\u3002",
   );
   requireValue(
-    Number.isSafeInteger(input.employerId) && input.employerId > 0,
-    "\u52e4\u52d9\u5148\u3092\u9078\u3093\u3067\u304f\u3060\u3055\u3044\u3002",
+    Number.isSafeInteger(input.incomeSourceId) && input.incomeSourceId > 0,
+    "\u5165\u91d1\u5143\u3092\u9078\u3093\u3067\u304f\u3060\u3055\u3044\u3002",
   );
   requireValue(
     typeof input.payDate === "string" && validDate(input.payDate),
@@ -949,7 +1007,7 @@ export function validatePayslip(input: Payslip): Payslip {
   const out: Payslip = {
     id: input.id,
     transactionId: input.transactionId,
-    employerId: input.employerId,
+    incomeSourceId: input.incomeSourceId,
     payDate: input.payDate,
     workPeriod: input.workPeriod.trim(),
     memo: input.memo,
@@ -960,8 +1018,8 @@ export function validatePayslip(input: Payslip): Payslip {
   payslipTotals(out);
   return out;
 }
-export function validateEmployers(raw: unknown): Employer[] {
-  const employers = array(raw).map((v) => {
+export function validateIncomeSources(raw: unknown): IncomeSource[] {
+  const incomeSources = array(raw).map((v) => {
     const o = object(v);
     requireValue(
       Number.isSafeInteger(o.id) &&
@@ -973,28 +1031,28 @@ export function validateEmployers(raw: unknown): Employer[] {
         Number.isSafeInteger(o.sortOrder) &&
         o.sortOrder >= 0 &&
         typeof o.hidden === "boolean",
-      "\u52e4\u52d9\u5148\u30c7\u30fc\u30bf\u304c\u4e0d\u6b63\u3067\u3059\u3002",
+      "\u5165\u91d1\u5143\u30c7\u30fc\u30bf\u304c\u4e0d\u6b63\u3067\u3059\u3002",
     );
     return {
       id: o.id,
       name: o.name,
       sortOrder: o.sortOrder,
       hidden: o.hidden,
-    } as Employer;
+    } as IncomeSource;
   });
   requireValue(
-    new Set(employers.map((e) => e.id)).size === employers.length &&
-      new Set(employers.map((e) => e.name)).size === employers.length,
-    "\u52e4\u52d9\u5148\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
+    new Set(incomeSources.map((e) => e.id)).size === incomeSources.length &&
+      new Set(incomeSources.map((e) => e.name)).size === incomeSources.length,
+    "\u5165\u91d1\u5143\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059\u3002",
   );
-  return employers;
+  return incomeSources;
 }
 export function validatePayroll(
   raw: unknown,
-  employers: Employer[],
+  incomeSources: IncomeSource[],
   transactions: Entry[],
 ): Payslip[] {
-  const es = new Set(employers.map((e) => e.id));
+  const es = new Set(incomeSources.map((e) => e.id));
   const entries = new Map(transactions.map((e) => [e.id, e]));
   const slips = array(raw).map((v) => {
     const p = validatePayslip(object(v) as unknown as Payslip);
@@ -1003,8 +1061,8 @@ export function validatePayroll(
       "\u660e\u7d30ID\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
     );
     requireValue(
-      es.has(p.employerId),
-      "\u660e\u7d30\u306e\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+      es.has(p.incomeSourceId),
+      "\u660e\u7d30\u306e\u5165\u91d1\u5143\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
     );
     requireValue(
       p.transactionId === null ||
@@ -1054,7 +1112,7 @@ export function validateSalaryTargets(raw: unknown): SalaryTarget[] {
 }
 export function annualSalary(
   payslips: Payslip[],
-  employers: Employer[],
+  incomeSources: IncomeSource[],
   year: number,
 ) {
   const slips = payslips
@@ -1077,11 +1135,11 @@ export function annualSalary(
   return {
     slips,
     ...sum(slips),
-    employers: employers
-      .filter((e) => slips.some((p) => p.employerId === e.id))
+    incomeSources: incomeSources
+      .filter((e) => slips.some((p) => p.incomeSourceId === e.id))
       .map((e) => ({
         ...e,
-        ...sum(slips.filter((p) => p.employerId === e.id)),
+        ...sum(slips.filter((p) => p.incomeSourceId === e.id)),
       })),
     months: Array.from({ length: 12 }, (_, i) => {
       const month = `${year}-${String(i + 1).padStart(2, "0")}`;
@@ -1093,47 +1151,34 @@ export function annualSalary(
 export function missingSalaryEntries(
   entries: Entry[],
   payslips: Payslip[],
-  employers: Employer[],
+  incomeSources: IncomeSource[],
   year: number,
 ): Entry[] {
-  const linked = new Set(
-    payslips.flatMap((p) =>
-      p.transactionId === null ? [] : [p.transactionId],
-    ),
-  );
-  const linkedSlips = payslips.filter(
-    (p) =>
-      p.transactionId !== null && entries.some((e) => e.id === p.transactionId),
-  );
-  const known = new Set(
-    [
-      ...entries
-        .filter((e) => linked.has(e.id!))
-        .map((e) => e.description.trim()),
-      ...employers
-        .filter((e) => linkedSlips.some((p) => p.employerId === e.id))
-        .map((e) => e.name),
-    ].filter(Boolean),
+  const linked = new Set(payslips.map((p) => p.transactionId));
+  const sources = new Set(
+    payslips
+      .filter((p) => p.transactionId !== null)
+      .map((p) => p.incomeSourceId),
   );
   return entries.filter(
     (e) =>
       e.type === "INCOME" &&
-      e.date.startsWith(String(year) + "-") &&
+      e.date.startsWith(year + "-") &&
       !linked.has(e.id!) &&
-      known.has(e.description.trim()),
+      sources.has(e.incomeSourceId!),
   );
 }
 export function salaryCsv(
   payslips: Payslip[],
-  employers: Employer[],
+  incomeSources: IncomeSource[],
   year: number,
 ): string {
-  const result = annualSalary(payslips, employers, year);
+  const result = annualSalary(payslips, incomeSources, year);
   const rows: (string | number)[][] = [
     [
       "Section",
       "Year",
-      "EmployerOrMonth",
+      "IncomeSourceOrMonth",
       "TaxablePayYen",
       "IncomeTaxYen",
       "NetPayYen",
@@ -1154,8 +1199,8 @@ export function salaryCsv(
       result.social,
       result.residentTax,
     ],
-    ...result.employers.map((e) => [
-      "Employer",
+    ...result.incomeSources.map((e) => [
+      "IncomeSource",
       year,
       e.name,
       e.taxable,
@@ -1199,4 +1244,42 @@ export function salaryCsv(
       )
       .join("\r\n")
   );
+}
+export function normalizeEntry(e: Entry): Entry {
+  return {
+    ...e,
+    incomeSourceId: e.type === "INCOME" ? (e.incomeSourceId ?? null) : null,
+    storeId: e.type === "EXPENSE" ? e.storeId : null,
+    installments: e.type === "EXPENSE" ? e.installments : 1,
+    paymentMethod: e.type === "EXPENSE" ? e.paymentMethod : "NOW",
+    recurringId: e.type === "EXPENSE" ? e.recurringId : null,
+  };
+}
+export function mergeIncomeSources(b: Backup): Backup {
+  const sources: IncomeSource[] = [];
+  const ids = new Map<number, number>();
+  for (const s of b.incomeSources ?? []) {
+    const name = s.name.trim();
+    requireValue(name, "Income source name required");
+    let found = sources.find((x) => x.name === name);
+    if (!found) {
+      found = { ...s, name };
+      sources.push(found);
+    }
+    ids.set(s.id!, found.id!);
+  }
+  return {
+    ...b,
+    incomeSources: sources,
+    transactions: b.transactions.map((e) => ({
+      ...e,
+      incomeSourceId: e.incomeSourceId
+        ? (ids.get(e.incomeSourceId) ?? null)
+        : null,
+    })),
+    payslips: b.payslips?.map((p) => ({
+      ...p,
+      incomeSourceId: ids.get(p.incomeSourceId) ?? p.incomeSourceId,
+    })),
+  };
 }

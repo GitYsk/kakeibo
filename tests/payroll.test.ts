@@ -22,7 +22,7 @@ import {
 const now = "2024-05-08T01:02:03.000Z";
 const slip = (extra: Partial<Payslip> = {}): Payslip => ({
   ...emptyPayslip("2024-05-25"),
-  employerId: 1,
+  incomeSourceId: 1,
   basePay: 120003,
   overtimePay: 4001,
   otherTaxablePay: 502,
@@ -43,6 +43,7 @@ const income = (extra: Partial<Entry> = {}): Entry => ({
   type: "INCOME",
   amount: 10000,
   description: "Synthetic payroll",
+  incomeSourceId: 1,
   storeId: null,
   installments: 1,
   paymentMethod: "NOW",
@@ -54,7 +55,7 @@ const income = (extra: Partial<Entry> = {}): Entry => ({
 async function database() {
   const db = new BudgetDB("payroll-" + crypto.randomUUID());
   await db.initialize();
-  await db.addEmployer("Synthetic employer");
+  await db.addIncomeSource("Synthetic employer");
   return db;
 }
 describe("payroll calculations", () => {
@@ -73,14 +74,14 @@ describe("payroll calculations", () => {
       slip({ id: 1, payDate: "2025-01-25", workPeriod: "2024-12" }),
       slip({ id: 2, payDate: "2024-12-25" }),
     ];
-    const employers = [
+    const incomeSources = [
       { id: 1, name: "Synthetic employer", sortOrder: 0, hidden: false },
     ];
-    expect(annualSalary(rows, employers, 2024).taxable).toBe(124506);
-    const value = annualSalary(rows, employers, 2025);
+    expect(annualSalary(rows, incomeSources, 2024).taxable).toBe(124506);
+    const value = annualSalary(rows, incomeSources, 2025);
     expect(value.months[0].taxable).toBe(124506);
     expect(value.months[11].taxable).toBe(0);
-    expect(value.employers[0].incomeTax).toBe(503);
+    expect(value.incomeSources[0].incomeTax).toBe(503);
     expect(value.gross - value.taxable).toBe(914);
   });
   it("detects only exact known payroll descriptions or linked employer names and exports summaries", () => {
@@ -88,19 +89,19 @@ describe("payroll calculations", () => {
       income({ id: 1 }),
       income({ id: 2 }),
       income({ id: 3, description: "Synthetic employer" }),
-      income({ id: 4, description: "Other income" }),
+      income({ id: 4, description: "Other income", incomeSourceId: null }),
       income({ id: 5, date: "2023-05-25" }),
     ];
     const slips = [slip({ id: 1, transactionId: 1 })];
-    const employers = [
+    const incomeSources = [
       { id: 1, name: "Synthetic employer", sortOrder: 0, hidden: false },
     ];
     expect(
-      missingSalaryEntries(rows, slips, employers, 2024).map((e) => e.id),
+      missingSalaryEntries(rows, slips, incomeSources, 2024).map((e) => e.id),
     ).toEqual([2, 3]);
-    const csv = salaryCsv(slips, employers, 2024);
+    const csv = salaryCsv(slips, incomeSources, 2024);
     expect(csv).toContain("124506");
-    expect(csv).toContain('"Employer"');
+    expect(csv).toContain('"IncomeSource"');
     expect(csv).toContain('"2024-05"');
   });
 });
@@ -114,9 +115,9 @@ describe("atomic payroll storage", () => {
       const state = await db.state();
       expect(assets(state.entries)).toBe(before);
       expect(totals(state.entries, "2024-05", "PAYMENT").income).toBe(10000);
-      expect(annualSalary(state.payslips, state.employers, 2024).taxable).toBe(
-        124506,
-      );
+      expect(
+        annualSalary(state.payslips, state.incomeSources, 2024).taxable,
+      ).toBe(124506);
       expect(state.payslips[0].transactionId).toBeNull();
     } finally {
       await db.delete();
@@ -151,7 +152,12 @@ describe("atomic payroll storage", () => {
     const db = await database();
     try {
       await expect(
-        db.saveEntry(income(), "2024-05-25", now, slip({ employerId: 999 })),
+        db.saveEntry(
+          income({ incomeSourceId: 999 }),
+          "2024-05-25",
+          now,
+          slip({ incomeSourceId: 999 }),
+        ),
       ).rejects.toThrow();
       expect(await db.transactions.count()).toBe(0);
       await expect(
@@ -184,12 +190,12 @@ describe("atomic payroll storage", () => {
   it("keeps stable employer references and validates named user targets", async () => {
     const db = await database();
     try {
-      expect(await db.addEmployer(" Synthetic employer ")).toBe(1);
+      expect(await db.addIncomeSource(" Synthetic employer ")).toBe(1);
       await db.saveStandalonePayslip(slip(), now);
-      await db.renameEmployer(1, "Renamed employer");
-      await db.toggleEmployer(1);
-      await expect(db.deleteEmployer(1)).rejects.toThrow();
-      expect((await db.payslips.toArray())[0].employerId).toBe(1);
+      await db.renameIncomeSource(1, "Renamed employer");
+      await db.toggleIncomeSource(1);
+      await expect(db.deleteIncomeSource(1)).rejects.toThrow();
+      expect((await db.payslips.toArray())[0].incomeSourceId).toBe(1);
       await db.patchSettings({
         salaryTargets: [
           { id: "synthetic-target", name: "Personal target", amount: 222222 },
@@ -205,7 +211,7 @@ describe("atomic payroll storage", () => {
       await db.delete();
     }
   });
-  it("round-trips payroll, employers, user targets and flat snapshots; accepts legacy backups", async () => {
+  it("round-trips payroll, incomeSources, user targets and flat snapshots; accepts legacy backups", async () => {
     const db = await database();
     try {
       await db.saveStandalonePayslip(slip(), now);
@@ -217,7 +223,7 @@ describe("atomic payroll storage", () => {
       await db.snapshot("MANUAL", "test", "2024-05-25", now);
       const backup = await db.backup("test", now);
       const parsed = parseBackup(JSON.stringify(backup));
-      expect(parsed.schemaVersion).toBe(2);
+      expect(parsed.schemaVersion).toBe(3);
       expect(parsed.payslips).toHaveLength(1);
       expect(parsed.snapshots![0].data.payslips).toHaveLength(1);
       await db.replace(parsed, "test", "2024-05-25", now);
@@ -226,7 +232,7 @@ describe("atomic payroll storage", () => {
         ...backup,
         schemaVersion: 1,
         payslips: undefined,
-        employers: undefined,
+        incomeSources: undefined,
         settings: { ...defaults(), salaryTargets: undefined },
         snapshots: [],
       };
@@ -253,7 +259,7 @@ describe("atomic payroll storage", () => {
       await db.saveStandalonePayslip(slip(), now);
       await db.snapshot("MANUAL", "test", "2024-05-25", now);
       const backup = await db.backup("test", now);
-      backup.snapshots![0].data.payslips![0].employerId = 999;
+      backup.snapshots![0].data.payslips![0].incomeSourceId = 999;
       await expect(
         db.replace(backup, "test", "2024-05-25", now),
       ).rejects.toThrow();
@@ -269,7 +275,9 @@ async function seedLegacy(name: string) {
   await db.open();
   const settings = defaults();
   const { salaryTargets: _, ...oldSettings } = settings;
-  await db.table("transactions").add(income({ id: 7, amount: 73 }));
+  await db
+    .table("transactions")
+    .add(income({ id: 7, amount: 73, incomeSourceId: null }));
   await db
     .table("stores")
     .add({ id: 3, name: "Synthetic legacy shop", sortOrder: 0, hidden: true });
@@ -289,12 +297,12 @@ describe("schema migration protection", () => {
     const db = new BudgetDB(name);
     try {
       await db.prepareOpen("test");
-      expect(db.verno).toBe(2);
+      expect(db.verno).toBe(3);
       expect(await db.transactions.toArray()).toEqual(prior.transactions);
       expect(await db.stores.toArray()).toEqual(prior.stores);
       expect(await db.settings.toArray()).toEqual(prior.settings);
       expect(await db.payslips.count()).toBe(0);
-      expect(await db.employers.count()).toBe(0);
+      expect(await db.incomeSources.count()).toBe(0);
       const copies = await db.snapshots
         .where("reason")
         .equals("BEFORE_MIGRATION")
@@ -333,7 +341,7 @@ describe("schema migration protection", () => {
       legacy.close();
       const recovery = await recoveryBackup(name, "test", now);
       expect(recovery?.transactions).toEqual(prior.transactions);
-      expect(parseBackup(JSON.stringify(recovery)).schemaVersion).toBe(1);
+      expect(parseBackup(JSON.stringify(recovery)).schemaVersion).toBe(3);
     } finally {
       db.close();
       await Dexie.delete(name);
@@ -433,6 +441,47 @@ it("reopens a closed database instance through the protected startup path", asyn
     db.close();
     await db.prepareOpen("test");
     expect((await db.state()).payslips).toHaveLength(1);
+  } finally {
+    await db.delete();
+  }
+});
+it("moves schema-2 employers and linked payroll to income sources with stable IDs", async () => {
+  const name = "v2-" + crypto.randomUUID();
+  const legacy = new Dexie(name);
+  legacy.version(1).stores(LEGACY_SCHEMA);
+  legacy
+    .version(2)
+    .stores({
+      employers: "++id,&name,sortOrder",
+      payslips: "++id,&transactionId,employerId,payDate",
+    });
+  await legacy.open();
+  await legacy
+    .table("employers")
+    .add({
+      id: 19,
+      name: "Synthetic old employer",
+      sortOrder: 0,
+      hidden: false,
+    });
+  await legacy
+    .table("transactions")
+    .add(income({ id: 21, incomeSourceId: undefined }));
+  const { incomeSourceId: _, ...data } = slip({ id: 31, transactionId: 21 });
+  await legacy.table("payslips").add({ ...data, employerId: 19 });
+  await legacy.table("settings").put({ id: "preferences", value: defaults() });
+  legacy.close();
+  const db = new BudgetDB(name);
+  try {
+    await db.prepareOpen();
+    expect((await db.incomeSources.get(19))?.name).toBe(
+      "Synthetic old employer",
+    );
+    expect((await db.payslips.get(31))?.incomeSourceId).toBe(19);
+    expect((await db.transactions.get(21))?.incomeSourceId).toBe(19);
+    expect(
+      await db.snapshots.where("reason").equals("BEFORE_MIGRATION").count(),
+    ).toBe(1);
   } finally {
     await db.delete();
   }

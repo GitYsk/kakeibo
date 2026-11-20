@@ -41,9 +41,10 @@ import {
   type State,
   type Store,
   type Payslip,
-  type Employer,
+  type IncomeSource,
   payslipTotals,
   validDate,
+  mergeIncomeSources,
 } from "./core.ts";
 import { beginSave, prepareBackup, type Prepared } from "./backup.ts";
 import { registerUpdates, type UpdateAPI } from "./updates.ts";
@@ -83,7 +84,7 @@ function backupPeriod(backup: Backup) {
 }
 const empty: State = {
   payslips: [],
-  employers: [],
+  incomeSources: [],
   entries: [],
   recurring: [],
   stores: [],
@@ -163,12 +164,14 @@ function Basis({
 function EntryCard({
   entry,
   stores,
+  incomeSources = [],
   allocated,
   onEdit,
   onDelete,
 }: {
   entry: Entry;
   stores: Store[];
+  incomeSources?: IncomeSource[];
   allocated?: Charge;
   onEdit?: (e: Entry) => void;
   onDelete?: (e: Entry) => void;
@@ -193,11 +196,18 @@ function EntryCard({
           </strong>
         </div>
         <div className="muted">
-          {entry.date + " \u00b7 " + storeName(stores, entry.storeId)}
+          {entry.date +
+            " \u00b7 " +
+            (entry.type === "INCOME"
+              ? (incomeSources.find((s) => s.id === entry.incomeSourceId)
+                  ?.name ?? "\u672a\u8a2d\u5b9a")
+              : storeName(stores, entry.storeId))}
         </div>
         <div className="tags">
           <span>{TYPE_LABEL[entry.type]}</span>
-          <span>{PAYMENT_LABEL[entry.paymentMethod]}</span>
+          {entry.type === "EXPENSE" && (
+            <span>{PAYMENT_LABEL[entry.paymentMethod]}</span>
+          )}
           {entry.installments > 1 && (
             <span>
               {allocated
@@ -226,6 +236,7 @@ interface Draft {
   amount: string;
   description: string;
   storeId: string;
+  incomeSourceId: string;
   installments: string;
   paymentMethod: Entry["paymentMethod"];
   recurringId: string | null;
@@ -236,7 +247,7 @@ interface Draft {
 function Editor({
   original,
   stores,
-  employers,
+  incomeSources,
   originalPayslip,
   onClose,
   onSave,
@@ -244,7 +255,7 @@ function Editor({
 }: {
   original: Entry | null;
   stores: Store[];
-  employers: Employer[];
+  incomeSources: IncomeSource[];
   originalPayslip?: Payslip;
   onClose: () => void;
   onSave: (e: Entry, payroll?: Payslip | null) => Promise<void>;
@@ -254,6 +265,7 @@ function Editor({
     original
       ? {
           ...original,
+          incomeSourceId: String(original.incomeSourceId ?? ""),
           amount: String(original.amount),
           installments: String(original.installments),
           storeId: original.storeId === null ? "" : String(original.storeId),
@@ -264,6 +276,7 @@ function Editor({
           amount: "",
           description: "",
           storeId: "",
+          incomeSourceId: "",
           installments: "1",
           paymentMethod: "NOW",
           recurringId: null,
@@ -280,20 +293,6 @@ function Editor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const update = (field: keyof Draft, value: string) => {
-    if (
-      field === "type" &&
-      value !== "INCOME" &&
-      originalPayslip &&
-      payrollEnabled
-    ) {
-      if (
-        !confirm(
-          "\u5206\u985e\u3092\u5909\u66f4\u3059\u308b\u3068\u3001\u4fdd\u5b58\u6642\u306b\u7d66\u4e0e\u660e\u7d30\u3092\u524a\u9664\u3057\u307e\u3059\u3002\u3088\u308d\u3057\u3044\u3067\u3059\u304b\uff1f",
-        )
-      )
-        return;
-      setPayrollEnabled(false);
-    } else if (field === "type" && value !== "INCOME") setPayrollEnabled(false);
     if (
       field === "date" &&
       !originalPayslip &&
@@ -316,19 +315,69 @@ function Editor({
     setError("");
     setBusy(true);
     try {
-      if (!/^\d+$/.test(draft.amount) || !/^\d+$/.test(draft.installments))
+      if (
+        !/^\d+$/.test(draft.amount) ||
+        (draft.type === "EXPENSE" && !/^\d+$/.test(draft.installments))
+      )
         throw new Error(
           "\u91d1\u984d\u3068\u5206\u5272\u56de\u6570\u306f\u6574\u6570\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
         );
+      if (
+        original &&
+        original.type !== draft.type &&
+        (original.storeId ||
+          original.incomeSourceId ||
+          originalPayslip ||
+          original.installments > 1 ||
+          original.recurringId ||
+          original.paymentMethod !== "NOW")
+      ) {
+        if (
+          !confirm(
+            "\u5206\u985e\u3092\u5909\u66f4\u3059\u308b\u3068\u3001\u4f7f\u308f\u306a\u3044\u9805\u76ee\u306f\u4fdd\u5b58\u6642\u306b\u6d88\u53bb\u3055\u308c\u307e\u3059\u3002\u5b9a\u671f\u652f\u6255\u306e\u884c\u306f\u5b9a\u671f\u652f\u6255\u304b\u3089\u5916\u308c\u307e\u3059\u3002\u7d9a\u3051\u307e\u3059\u304b\uff1f",
+          )
+        )
+          return;
+        if (originalPayslip && draft.type !== "INCOME") {
+          const choice = prompt(
+            "\u7d66\u4e0e\u660e\u7d30\u3092\u3069\u3046\u3057\u307e\u3059\u304b\uff1f 1: \u660e\u7d30\u3060\u3051\u6b8b\u3059 / 2: \u660e\u7d30\u3082\u524a\u9664",
+            "1",
+          );
+          if (choice !== "1" && choice !== "2") return;
+          await db.saveEntry(
+            {
+              ...draft,
+              amount: Number(draft.amount),
+              installments: Number(draft.installments),
+              storeId: draft.storeId ? Number(draft.storeId) : null,
+              incomeSourceId: draft.incomeSourceId
+                ? Number(draft.incomeSourceId)
+                : null,
+            },
+            undefined,
+            undefined,
+            null,
+            choice === "1" ? "KEEP" : "DELETE",
+          );
+          onClose();
+          return;
+        }
+      }
       await onSave(
         {
           ...draft,
           amount: Number(draft.amount),
           installments: Number(draft.installments),
           storeId: draft.storeId ? Number(draft.storeId) : null,
+          incomeSourceId: draft.incomeSourceId
+            ? Number(draft.incomeSourceId)
+            : null,
         },
         draft.type === "INCOME" && payrollEnabled
-          ? readSlipDraft(payrollDraft)
+          ? readSlipDraft({
+              ...payrollDraft,
+              incomeSourceId: draft.incomeSourceId,
+            })
           : originalPayslip
             ? null
             : undefined,
@@ -371,17 +420,6 @@ function Editor({
         }}
       >
         <label>
-          {"\u65e5\u4ed8"}
-          <input
-            type="date"
-            required
-            min="1900-01-01"
-            max="2200-12-31"
-            value={draft.date}
-            onChange={(e) => update("date", e.target.value)}
-          />
-        </label>
-        <label>
           {"\u5206\u985e"}
           <select
             value={draft.type}
@@ -395,6 +433,17 @@ function Editor({
           </select>
         </label>
         <label>
+          {"\u65e5\u4ed8"}
+          <input
+            type="date"
+            required
+            min="1900-01-01"
+            max="2200-12-31"
+            value={draft.date}
+            onChange={(e) => update("date", e.target.value)}
+          />
+        </label>
+        <label>
           {"\u91d1\u984d\uff08\u5186\u30fb\u7dcf\u984d\uff09"}
           <input
             inputMode="numeric"
@@ -405,6 +454,42 @@ function Editor({
             required
           />
         </label>
+        {draft.type === "INCOME" && (
+          <>
+            <label>
+              {"\u5165\u91d1\u5143"}
+              <select
+                value={draft.incomeSourceId}
+                onChange={(e) => {
+                  if (e.target.value === "add") {
+                    const name = prompt("\u65b0\u3057\u3044\u5165\u91d1\u5143");
+                    if (name)
+                      void db
+                        .addIncomeSource(name)
+                        .then((id) => update("incomeSourceId", String(id)))
+                        .catch((e) => onError(errorText(e)));
+                  } else update("incomeSourceId", e.target.value);
+                }}
+              >
+                <option value="">{"\u672a\u8a2d\u5b9a"}</option>
+                {incomeSources
+                  .filter(
+                    (s) => !s.hidden || String(s.id) === draft.incomeSourceId,
+                  )
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                <option value="add">
+                  {
+                    "\uff0b \u65b0\u3057\u3044\u5165\u91d1\u5143\u3092\u8ffd\u52a0"
+                  }
+                </option>
+              </select>
+            </label>
+          </>
+        )}{" "}
         <label>
           {"\u5185\u5bb9"}
           <textarea
@@ -415,93 +500,100 @@ function Editor({
             placeholder={"\u4f55\u306b\u4f7f\u3044\u307e\u3057\u305f\u304b"}
           />
         </label>
-        <label>
-          {"\u8cfc\u5165\u5148"}
-          <select
-            value={draft.storeId}
-            onChange={(e) => {
-              if (e.target.value === "add") {
-                setAdding(true);
-              } else update("storeId", e.target.value);
-            }}
-          >
-            <option value="">{"\u672a\u8a2d\u5b9a"}</option>
-            {stores
-              .filter((s) => !s.hidden || String(s.id) === draft.storeId)
-              .map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            <option value="add">
-              {"\uff0b \u65b0\u3057\u3044\u8cfc\u5165\u5148\u3092\u8ffd\u52a0"}
-            </option>
-          </select>
-        </label>
-        {adding && (
-          <div className="inline-add">
+        {draft.type === "EXPENSE" && (
+          <>
+            {" "}
             <label>
-              {"\u65b0\u3057\u3044\u8cfc\u5165\u5148"}
+              {"\u8cfc\u5165\u5148"}
+              <select
+                value={draft.storeId}
+                onChange={(e) => {
+                  if (e.target.value === "add") {
+                    setAdding(true);
+                  } else update("storeId", e.target.value);
+                }}
+              >
+                <option value="">{"\u672a\u8a2d\u5b9a"}</option>
+                {stores
+                  .filter((s) => !s.hidden || String(s.id) === draft.storeId)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                <option value="add">
+                  {
+                    "\uff0b \u65b0\u3057\u3044\u8cfc\u5165\u5148\u3092\u8ffd\u52a0"
+                  }
+                </option>
+              </select>
+            </label>
+            {adding && (
+              <div className="inline-add">
+                <label>
+                  {"\u65b0\u3057\u3044\u8cfc\u5165\u5148"}
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    maxLength={200}
+                  />
+                </label>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() =>
+                    void db
+                      .addStore(name)
+                      .then((id) => {
+                        update("storeId", String(id));
+                        setAdding(false);
+                        setName("");
+                      })
+                      .catch((e) => onError(errorText(e)))
+                  }
+                >
+                  {"\u8ffd\u52a0\u3057\u3066\u9078\u629e"}
+                </button>
+              </div>
+            )}
+            <label>
+              {"\u5206\u5272\u56de\u6570"}
               <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={200}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                disabled={monthly}
+                value={draft.installments}
+                onChange={(e) => update("installments", e.target.value)}
               />
             </label>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() =>
-                void db
-                  .addStore(name)
-                  .then((id) => {
-                    update("storeId", String(id));
-                    setAdding(false);
-                    setName("");
-                  })
-                  .catch((e) => onError(errorText(e)))
-              }
-            >
-              {"\u8ffd\u52a0\u3057\u3066\u9078\u629e"}
-            </button>
-          </div>
-        )}
-        <label>
-          {"\u652f\u6255\u65b9\u6cd5"}
-          <select
-            value={draft.paymentMethod}
-            onChange={(e) => {
-              update("paymentMethod", e.target.value);
-              if (e.target.value === "MONTHLY") update("installments", "1");
-            }}
-          >
-            {PAYMENTS.filter(
-              (p) =>
-                p !== "MONTHLY_ENDED" ||
-                draft.paymentMethod === "MONTHLY_ENDED",
-            ).map((p) => (
-              <option key={p} value={p}>
-                {PAYMENT_LABEL[p]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {"\u5206\u5272\u56de\u6570"}
-          <input
-            inputMode="numeric"
-            pattern="[0-9]*"
-            disabled={monthly}
-            value={draft.installments}
-            onChange={(e) => update("installments", e.target.value)}
-          />
-        </label>
-        {monthly && (
-          <p className="note">
-            {
-              "\u7fcc\u6708\u4ee5\u964d\u306f\u6bce\u67081\u65e5\u306b\u8a08\u4e0a\u3057\u307e\u3059\u3002\u904e\u53bb\u306e\u65e5\u4ed8\u3067\u767b\u9332\u3059\u308b\u3068\u4eca\u6708\u307e\u3067\u306e\u4e0d\u8db3\u5206\u3082\u8ffd\u52a0\u3057\u307e\u3059\u3002\u500b\u5225\u306e\u8a18\u9332\u306e\u7de8\u96c6\u306f\u5b9a\u671f\u652f\u6255\u306e\u8a2d\u5b9a\u3092\u5909\u66f4\u3057\u307e\u305b\u3093\u3002"
-            }
-          </p>
+            <label>
+              {"\u652f\u6255\u65b9\u6cd5"}
+              <select
+                value={draft.paymentMethod}
+                onChange={(e) => {
+                  update("paymentMethod", e.target.value);
+                  if (e.target.value === "MONTHLY") update("installments", "1");
+                }}
+              >
+                {PAYMENTS.filter(
+                  (p) =>
+                    p !== "MONTHLY_ENDED" ||
+                    draft.paymentMethod === "MONTHLY_ENDED",
+                ).map((p) => (
+                  <option key={p} value={p}>
+                    {PAYMENT_LABEL[p]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {monthly && (
+              <p className="note">
+                {
+                  "\u7fcc\u6708\u4ee5\u964d\u306f\u6bce\u67081\u65e5\u306b\u8a08\u4e0a\u3057\u307e\u3059\u3002\u904e\u53bb\u306e\u65e5\u4ed8\u3067\u767b\u9332\u3059\u308b\u3068\u4eca\u6708\u307e\u3067\u306e\u4e0d\u8db3\u5206\u3082\u8ffd\u52a0\u3057\u307e\u3059\u3002\u500b\u5225\u306e\u8a18\u9332\u306e\u7de8\u96c6\u306f\u5b9a\u671f\u652f\u6255\u306e\u8a2d\u5b9a\u3092\u5909\u66f4\u3057\u307e\u305b\u3093\u3002"
+                }
+              </p>
+            )}
+          </>
         )}
         {draft.type !== "EXPENSE" && (
           <p className="note">
@@ -549,7 +641,8 @@ function Editor({
               <PayslipFields
                 draft={payrollDraft}
                 onChange={setPayrollDraft}
-                employers={employers}
+                incomeSources={incomeSources}
+                hideSource
                 incomeAmount={
                   /^\d+$/.test(draft.amount) ? Number(draft.amount) : null
                 }
@@ -571,6 +664,7 @@ function Records({
   onEdit: (e: Entry) => void;
   onDelete: (e: Entry) => void;
 }) {
+  const [source, setSource] = useState("all");
   const [query, setQuery] = useState("");
   const [type, setType] = useState("");
   const [store, setStore] = useState("all");
@@ -580,6 +674,9 @@ function Records({
     .filter(
       (e) =>
         (!type || e.type === type) &&
+        (source === "all" ||
+          (e.type === "INCOME" &&
+            e.incomeSourceId === (source === "" ? null : Number(source)))) &&
         (store === "all" ||
           e.storeId === (store === "" ? null : Number(store))) &&
         (!payment || e.paymentMethod === payment) &&
@@ -645,6 +742,20 @@ function Records({
           </select>
         </label>
       </details>
+      <label>
+        {"\u5165\u91d1\u5143\u3067\u7d5e\u308a\u8fbc\u307f"}
+        <select value={source} onChange={(e) => setSource(e.target.value)}>
+          <option value="all">
+            {"\u3059\u3079\u3066\u306e\u5165\u91d1\u5143"}
+          </option>
+          <option value="">{"\u672a\u8a2d\u5b9a"}</option>
+          {state.incomeSources.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+      </label>{" "}
       <p className="muted">{`${filtered.length}\u4ef6\u306e\u8a18\u9332`}</p>
       {!filtered.length && (
         <div className="empty">
@@ -663,6 +774,7 @@ function Records({
             <EntryCard
               entry={e}
               stores={state.stores}
+              incomeSources={state.incomeSources}
               onEdit={onEdit}
               onDelete={onDelete}
             />
@@ -708,6 +820,7 @@ function Month({
         key={c.entry.id}
         entry={c.entry}
         stores={state.stores}
+        incomeSources={state.incomeSources}
         allocated={c}
         onEdit={onEdit}
       />
@@ -1476,9 +1589,9 @@ export function App() {
     try {
       return prepareBackup({
         format: "kakeibo-web",
-        schemaVersion: 2,
+        schemaVersion: 3,
         payslips: state.payslips,
-        employers: state.employers,
+        incomeSources: state.incomeSources,
         exportedAt: new Date().toISOString(),
         appVersion: VERSION,
         transactions: state.entries,
@@ -1493,10 +1606,10 @@ export function App() {
   }, [state, ready]);
   const csvFile = useMemo(
     () =>
-      new Blob([exportCsv(state.entries, state.stores)], {
+      new Blob([exportCsv(state.entries, state.stores, state.incomeSources)], {
         type: "text/csv;charset=utf-8",
       }),
-    [state.entries, state.stores],
+    [state.entries, state.stores, state.incomeSources],
   );
   const saveCsv = () => {
     const url = URL.createObjectURL(csvFile);
@@ -1693,7 +1806,8 @@ export function App() {
         const result = importCsv(text);
         const backup: Backup = {
           format: "kakeibo-web",
-          schemaVersion: 1,
+          schemaVersion: 3,
+          payslips: [],
           exportedAt: new Date().toISOString(),
           appVersion: VERSION,
           transactions: result.transactions,
@@ -1703,6 +1817,7 @@ export function App() {
             ...defaults(),
             accounting: stateRef.current.settings.accounting,
           },
+          incomeSources: result.incomeSources,
           snapshots: [],
         };
         setOverlay({
@@ -1730,7 +1845,7 @@ export function App() {
     if (
       (state.entries.length ||
         state.payslips.length ||
-        state.employers.length ||
+        state.incomeSources.length ||
         state.settings.salaryTargets.length) &&
       prepared
     ) {
@@ -1745,6 +1860,7 @@ export function App() {
   const replace = async (backup: Backup) => {
     setSaving(true);
     try {
+      backup = mergeIncomeSources(backup);
       await db.replace(backup, VERSION);
       await db.startup(VERSION);
       setOverlay(null);
@@ -1956,6 +2072,7 @@ export function App() {
                         key={e.id}
                         entry={e}
                         stores={state.stores}
+                        incomeSources={state.incomeSources}
                         onEdit={edit}
                       />
                     ))
@@ -2097,7 +2214,7 @@ export function App() {
       {standalone && (
         <StandalonePayslipEditor
           original={standalone.slip}
-          employers={state.employers}
+          incomeSources={state.incomeSources}
           onClose={() => setStandalone(null)}
           onError={error}
         />
@@ -2146,7 +2263,7 @@ export function App() {
           key={editor.entry?.id ?? "new"}
           original={editor.entry}
           stores={state.stores}
-          employers={state.employers}
+          incomeSources={state.incomeSources}
           originalPayslip={state.payslips.find(
             (p) => p.transactionId === editor.entry?.id,
           )}
@@ -2318,14 +2435,47 @@ export function App() {
           <dl>
             <dt>{"\u5f62\u5f0f"}</dt>
             <dd>{overlay.source}</dd>
+          </dl>
+          {overlay?.kind === "import" && overlay.source === "CSV" && (
+            <section className="panel">
+              <h3>
+                {
+                  "\u5165\u91d1\u5143\u306e\u78ba\u8a8d\u30fb\u540d\u524d\u4fee\u6b63"
+                }
+              </h3>
+              {(overlay.backup.incomeSources ?? []).map((source) => (
+                <label key={source.id}>
+                  {overlay.backup.transactions.filter(
+                    (e) => e.incomeSourceId === source.id,
+                  ).length + "\u4ef6"}
+                  <input
+                    value={source.name}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      setOverlay({
+                        ...overlay,
+                        backup: {
+                          ...overlay.backup,
+                          incomeSources: overlay.backup.incomeSources!.map(
+                            (s) => (s.id === source.id ? { ...s, name } : s),
+                          ),
+                        },
+                      });
+                    }}
+                  />
+                </label>
+              ))}
+            </section>
+          )}
+          <dl>
             <dt>{"\u8a18\u9332"}</dt>
             <dd>{overlay.backup.transactions.length + "\u4ef6"}</dd>
             <dt>{"\u671f\u9593"}</dt>
             <dd>{backupPeriod(overlay.backup)}</dd>
             <dt>{"\u7d66\u4e0e\u660e\u7d30"}</dt>
             <dd>{(overlay.backup.payslips?.length ?? 0) + "\u4ef6"}</dd>
-            <dt>{"\u52e4\u52d9\u5148"}</dt>
-            <dd>{(overlay.backup.employers?.length ?? 0) + "\u4ef6"}</dd>
+            <dt>{"\u5165\u91d1\u5143"}</dt>
+            <dd>{(overlay.backup.incomeSources?.length ?? 0) + "\u4ef6"}</dd>
             <dt>{"\u7dcf\u8cc7\u7523"}</dt>
             <dd>{yen(assets(overlay.backup.transactions))}</dd>
             <dt>{"\u5b9a\u671f\u652f\u6255"}</dt>
@@ -2338,7 +2488,7 @@ export function App() {
           {overlay.backup.schemaVersion === 1 && (
             <p className="notice">
               {
-                "\u3053\u306e\u30d5\u30a1\u30a4\u30eb\u306b\u7d66\u4e0e\u660e\u7d30\u30fb\u52e4\u52d9\u5148\u30fb\u76ee\u5b89\u984d\u306f\u542b\u307e\u308c\u307e\u305b\u3093\u3002\u73fe\u5728\u306e\u7d66\u4e0e\u30c7\u30fc\u30bf\u3082\u7f6e\u304d\u63db\u308f\u308a\u307e\u3059\u3002\u5fc5\u8981\u306a\u3089\u5148\u306bJSON\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
+                "\u3053\u306e\u30d5\u30a1\u30a4\u30eb\u306b\u7d66\u4e0e\u660e\u7d30\u30fb\u5165\u91d1\u5143\u30fb\u76ee\u5b89\u984d\u306f\u542b\u307e\u308c\u307e\u305b\u3093\u3002\u73fe\u5728\u306e\u7d66\u4e0e\u30c7\u30fc\u30bf\u3082\u7f6e\u304d\u63db\u308f\u308a\u307e\u3059\u3002\u5fc5\u8981\u306a\u3089\u5148\u306bJSON\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
               }
             </p>
           )}

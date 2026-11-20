@@ -20,7 +20,7 @@ import {
   amount,
   validDate,
   type Payslip,
-  type Employer,
+  type IncomeSource,
   type State,
   type Entry,
   type PayField,
@@ -36,15 +36,15 @@ const errorText = (e: unknown) =>
   e instanceof Error
     ? e.message
     : "\u51e6\u7406\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002";
-export type SlipDraft = Omit<Payslip, PayField | "employerId"> &
-  Record<PayField, string> & { employerId: string; periodTouched: boolean };
+export type SlipDraft = Omit<Payslip, PayField | "incomeSourceId"> &
+  Record<PayField, string> & { incomeSourceId: string; periodTouched: boolean };
 export function slipDraft(p: Payslip = emptyPayslip()): SlipDraft {
   return {
     ...p,
     ...(Object.fromEntries(
       PAY_FIELDS.map((key) => [key, String(p[key])]),
     ) as Record<PayField, string>),
-    employerId: p.employerId ? String(p.employerId) : "",
+    incomeSourceId: p.incomeSourceId ? String(p.incomeSourceId) : "",
     periodTouched: !!p.id,
   } as SlipDraft;
 }
@@ -62,20 +62,22 @@ export function readSlipDraft(d: SlipDraft): Payslip {
     ...(Object.fromEntries(
       PAY_FIELDS.map((key) => [key, Number(d[key] || "0")]),
     ) as Record<PayField, number>),
-    employerId: Number(d.employerId),
+    incomeSourceId: Number(d.incomeSourceId),
   } as Payslip;
 }
 export function PayslipFields({
   draft,
   onChange,
-  employers,
+  incomeSources,
   incomeAmount,
   onMatch,
+  hideSource,
 }: {
   draft: SlipDraft;
   onChange: Dispatch<SetStateAction<SlipDraft>>;
-  employers: Employer[];
+  incomeSources: IncomeSource[];
   incomeAmount?: number | null;
+  hideSource?: boolean;
   onMatch?: (n: number) => void;
 }) {
   const [adding, setAdding] = useState(false);
@@ -100,67 +102,76 @@ export function PayslipFields({
   return (
     <section className="payroll-fields">
       <h3>{"\u7d66\u4e0e\u660e\u7d30"}</h3>
-      <label>
-        {"\u52e4\u52d9\u5148"}
-        <select
-          value={draft.employerId}
-          onChange={(e) => {
-            if (e.target.value === "add") setAdding(true);
-            else onChange({ ...draft, employerId: e.target.value });
-          }}
-        >
-          <option value="">
-            {"\u9078\u3093\u3067\u304f\u3060\u3055\u3044"}
-          </option>
-          {employers
-            .filter((e) => !e.hidden || String(e.id) === draft.employerId)
-            .map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          <option value="add">
-            {"\uff0b \u65b0\u3057\u3044\u52e4\u52d9\u5148\u3092\u8ffd\u52a0"}
-          </option>
-        </select>
-      </label>
-      {adding && (
-        <div className="inline-add">
+      {!hideSource && (
+        <>
+          {" "}
           <label>
-            {"\u65b0\u3057\u3044\u52e4\u52d9\u5148"}
-            <input
-              value={name}
-              maxLength={200}
-              onChange={(e) => setName(e.target.value)}
-            />
+            {"\u5165\u91d1\u5143"}
+            <select
+              value={draft.incomeSourceId}
+              onChange={(e) => {
+                if (e.target.value === "add") setAdding(true);
+                else onChange({ ...draft, incomeSourceId: e.target.value });
+              }}
+            >
+              <option value="">
+                {"\u9078\u3093\u3067\u304f\u3060\u3055\u3044"}
+              </option>
+              {incomeSources
+                .filter(
+                  (e) => !e.hidden || String(e.id) === draft.incomeSourceId,
+                )
+                .map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.name}
+                  </option>
+                ))}
+              <option value="add">
+                {
+                  "\uff0b \u65b0\u3057\u3044\u5165\u91d1\u5143\u3092\u8ffd\u52a0"
+                }
+              </option>
+            </select>
           </label>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              void db
-                .addEmployer(name)
-                .then((id) => {
-                  onChange((current) => ({
-                    ...current,
-                    employerId: String(id),
-                  }));
-                  setAdding(false);
-                  setName("");
-                  setError("");
-                })
-                .catch((e) => setError(errorText(e)));
-            }}
-          >
-            {"\u8ffd\u52a0\u3057\u3066\u9078\u629e"}
-          </button>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
+          {adding && (
+            <div className="inline-add">
+              <label>
+                {"\u65b0\u3057\u3044\u5165\u91d1\u5143"}
+                <input
+                  value={name}
+                  maxLength={200}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  void db
+                    .addIncomeSource(name)
+                    .then((id) => {
+                      onChange((current) => ({
+                        ...current,
+                        incomeSourceId: String(id),
+                      }));
+                      setAdding(false);
+                      setName("");
+                      setError("");
+                    })
+                    .catch((e) => setError(errorText(e)));
+                }}
+              >
+                {"\u8ffd\u52a0\u3057\u3066\u9078\u629e"}
+              </button>
+              {error && (
+                <p className="error" role="alert">
+                  {error}
+                </p>
+              )}
+            </div>
           )}
-        </div>
-      )}
+        </>
+      )}{" "}
       <label>
         {"\u652f\u7d66\u65e5"}
         <input
@@ -278,12 +289,12 @@ export function PayslipFields({
 }
 export function StandalonePayslipEditor({
   original,
-  employers,
+  incomeSources,
   onClose,
   onError,
 }: {
   original: Payslip | null;
-  employers: Employer[];
+  incomeSources: IncomeSource[];
   onClose: () => void;
   onError: (s: string) => void;
 }) {
@@ -336,7 +347,11 @@ export function StandalonePayslipEditor({
           "\u660e\u7d30\u306e\u307f\u306e\u767b\u9332\u3067\u3059\u3002\u7dcf\u8cc7\u7523\u3084\u6708\u9593\u53ce\u5165\u306f\u5909\u308f\u308a\u307e\u305b\u3093\u3002\u5e74\u9593\u7d66\u4e0e\u306b\u306f\u542b\u307e\u308c\u307e\u3059\u3002"
         }
       </p>
-      <PayslipFields draft={draft} onChange={setDraft} employers={employers} />
+      <PayslipFields
+        draft={draft}
+        onChange={setDraft}
+        incomeSources={incomeSources}
+      />
       {error && (
         <p className="error" role="alert">
           {error}
@@ -377,19 +392,19 @@ export function PayrollYear({
   onEdit: (p: Payslip) => void;
   onMissing: (e: Entry[]) => void;
 }) {
-  const value = annualSalary(state.payslips, state.employers, year);
+  const value = annualSalary(state.payslips, state.incomeSources, year);
   const missing = missingSalaryEntries(
     state.entries,
     state.payslips,
-    state.employers,
+    state.incomeSources,
     year,
   );
   const csv = useMemo(
     () =>
-      new Blob([salaryCsv(state.payslips, state.employers, year)], {
+      new Blob([salaryCsv(state.payslips, state.incomeSources, year)], {
         type: "text/csv;charset=utf-8",
       }),
-    [state.payslips, state.employers, year],
+    [state.payslips, state.incomeSources, year],
   );
   const save = () => {
     const url = URL.createObjectURL(csv);
@@ -489,16 +504,16 @@ export function PayrollYear({
         </button>
       </div>
       <h3 className="pay-subheading">
-        {"\u52e4\u52d9\u5148\u5225\u306e\u5185\u8a33"}
+        {"\u5165\u91d1\u5143\u5225\u306e\u5185\u8a33"}
       </h3>
-      {!value.employers.length && (
+      {!value.incomeSources.length && (
         <p className="muted">
           {
             "\u3053\u306e\u5e74\u306e\u7d66\u4e0e\u660e\u7d30\u306f\u3042\u308a\u307e\u305b\u3093\u3002"
           }
         </p>
       )}
-      {value.employers.map((e) => (
+      {value.incomeSources.map((e) => (
         <div className="employer-summary" key={e.id}>
           <strong>{e.name}</strong>
           <p>
@@ -545,8 +560,8 @@ export function PayrollYear({
               onClick={() => onEdit(p)}
             >
               <strong>
-                {state.employers.find((e) => e.id === p.employerId)?.name ??
-                  "\u52e4\u52d9\u5148\u672a\u8a2d\u5b9a"}
+                {state.incomeSources.find((e) => e.id === p.incomeSourceId)
+                  ?.name ?? "\u5165\u91d1\u5143\u672a\u8a2d\u5b9a"}
               </strong>
               <span>{p.payDate + " \u00b7 " + p.workPeriod}</span>
               <span>
@@ -577,7 +592,7 @@ export function PayrollSettings({
   onError: (m: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [employer, setEmployer] = useState<Employer | null>(null);
+  const [incomeSource, setIncomeSource] = useState<IncomeSource | null>(null);
   const [rename, setRename] = useState("");
   const [target, setTarget] = useState<{
     id?: string;
@@ -585,19 +600,19 @@ export function PayrollSettings({
     amount: string;
   } | null>(null);
   useEffect(() => {
-    onBusy(!!employer || !!target);
+    onBusy(!!incomeSource || !!target);
     return () => onBusy(false);
-  }, [employer, target]);
+  }, [incomeSource, target]);
   const run = (job: () => Promise<unknown>) =>
     void job().catch((e) => onError(errorText(e)));
   return (
     <>
       <section className="panel">
-        <h2>{"\u52e4\u52d9\u5148"}</h2>
+        <h2>{"\u5165\u91d1\u5143"}</h2>
         <div className="inline-field">
           <input
-            aria-label={"\u8ffd\u52a0\u3059\u308b\u52e4\u52d9\u5148"}
-            placeholder={"\u65b0\u3057\u3044\u52e4\u52d9\u5148"}
+            aria-label={"\u8ffd\u52a0\u3059\u308b\u5165\u91d1\u5143"}
+            placeholder={"\u65b0\u3057\u3044\u5165\u91d1\u5143"}
             value={name}
             maxLength={200}
             onChange={(e) => setName(e.target.value)}
@@ -606,7 +621,7 @@ export function PayrollSettings({
             className="secondary"
             onClick={() =>
               run(async () => {
-                await db.addEmployer(name);
+                await db.addIncomeSource(name);
                 setName("");
               })
             }
@@ -614,7 +629,7 @@ export function PayrollSettings({
             {"\u8ffd\u52a0"}
           </button>
         </div>
-        {state.employers.map((e, i) => (
+        {state.incomeSources.map((e, i) => (
           <div className="store-row" key={e.id}>
             <strong>
               {e.name + (e.hidden ? " \u00b7 \u975e\u8868\u793a" : "")}
@@ -623,26 +638,26 @@ export function PayrollSettings({
               <button
                 aria-label={e.name + "\u3092\u4e0a\u3078"}
                 disabled={i === 0}
-                onClick={() => run(() => db.moveEmployer(e.id!, -1))}
+                onClick={() => run(() => db.moveIncomeSource(e.id!, -1))}
               >
                 {"\u4e0a\u3078"}
               </button>
               <button
                 aria-label={e.name + "\u3092\u4e0b\u3078"}
-                disabled={i === state.employers.length - 1}
-                onClick={() => run(() => db.moveEmployer(e.id!, 1))}
+                disabled={i === state.incomeSources.length - 1}
+                onClick={() => run(() => db.moveIncomeSource(e.id!, 1))}
               >
                 {"\u4e0b\u3078"}
               </button>
               <button
                 onClick={() => {
-                  setEmployer(e);
+                  setIncomeSource(e);
                   setRename(e.name);
                 }}
               >
                 {"\u540d\u79f0"}
               </button>
-              <button onClick={() => run(() => db.toggleEmployer(e.id!))}>
+              <button onClick={() => run(() => db.toggleIncomeSource(e.id!))}>
                 {e.hidden ? "\u8868\u793a" : "\u96a0\u3059"}
               </button>
               <button
@@ -650,12 +665,12 @@ export function PayrollSettings({
                 onClick={() => {
                   if (
                     confirm(
-                      "\u672a\u4f7f\u7528\u306e\u52e4\u52d9\u5148\u300c" +
+                      "\u672a\u4f7f\u7528\u306e\u5165\u91d1\u5143\u300c" +
                         e.name +
                         "\u300d\u3092\u524a\u9664\u3057\u307e\u3059\u304b\uff1f",
                     )
                   )
-                    run(() => db.deleteEmployer(e.id!));
+                    run(() => db.deleteIncomeSource(e.id!));
                 }}
               >
                 {"\u524a\u9664"}
@@ -710,17 +725,17 @@ export function PayrollSettings({
           {"\u76ee\u5b89\u984d\u3092\u8ffd\u52a0"}
         </button>
       </section>
-      {employer && (
+      {incomeSource && (
         <Modal
-          title={"\u52e4\u52d9\u5148\u306e\u540d\u524d\u3092\u5909\u66f4"}
-          onClose={() => setEmployer(null)}
+          title={"\u5165\u91d1\u5143\u306e\u540d\u524d\u3092\u5909\u66f4"}
+          onClose={() => setIncomeSource(null)}
           actions={
             <button
               className="primary"
               onClick={() =>
                 run(async () => {
-                  await db.renameEmployer(employer.id!, rename);
-                  setEmployer(null);
+                  await db.renameIncomeSource(incomeSource.id!, rename);
+                  setIncomeSource(null);
                 })
               }
             >
@@ -729,7 +744,7 @@ export function PayrollSettings({
           }
         >
           <label>
-            {"\u52e4\u52d9\u5148\u306e\u540d\u524d"}
+            {"\u5165\u91d1\u5143\u306e\u540d\u524d"}
             <input
               value={rename}
               maxLength={200}

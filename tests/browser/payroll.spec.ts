@@ -144,6 +144,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
   await page
     .getByRole("textbox", { name: "\u5185\u5bb9", exact: true })
     .fill("Synthetic salary");
+
   await page
     .getByLabel("\u7d66\u4e0e\u660e\u7d30\u3092\u5165\u529b\u3059\u308b")
     .check();
@@ -153,21 +154,10 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
   await expect(
     page.getByLabel("\u5bfe\u8c61\u671f\u9593", { exact: true }),
   ).toHaveValue("2024-12");
+  page.once("dialog", (d) => d.accept("Synthetic employer"));
   await page
-    .getByRole("combobox", { name: "\u52e4\u52d9\u5148", exact: true })
+    .getByRole("combobox", { name: "\u5165\u91d1\u5143", exact: true })
     .selectOption("add");
-  await page
-    .getByRole("textbox", {
-      name: "\u65b0\u3057\u3044\u52e4\u52d9\u5148",
-      exact: true,
-    })
-    .fill("Synthetic employer");
-  await page
-    .getByRole("button", {
-      name: "\u8ffd\u52a0\u3057\u3066\u9078\u629e",
-      exact: true,
-    })
-    .click();
   await expect(
     page.getByRole("textbox", { name: "\u5185\u5bb9", exact: true }),
   ).toHaveValue("Synthetic salary");
@@ -215,7 +205,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
     })
     .click();
   await page
-    .getByRole("combobox", { name: "\u52e4\u52d9\u5148", exact: true })
+    .getByRole("combobox", { name: "\u5165\u91d1\u5143", exact: true })
     .selectOption({ label: "Synthetic employer" });
   await page
     .getByLabel("\u652f\u7d66\u65e5", { exact: true })
@@ -251,19 +241,17 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
     .click();
   await expect(page.locator(".asset-value")).toContainText("10,085");
   await page.getByRole("button", { name: "\u8a2d\u5b9a", exact: true }).click();
-  const employers = page
-    .locator(".panel")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "\u52e4\u52d9\u5148",
-        exact: true,
-      }),
-    });
+  const employers = page.locator(".panel").filter({
+    has: page.getByRole("heading", {
+      name: "\u5165\u91d1\u5143",
+      exact: true,
+    }),
+  });
   await employers
     .getByRole("button", { name: "\u540d\u79f0", exact: true })
     .click();
   await page
-    .getByLabel("\u52e4\u52d9\u5148\u306e\u540d\u524d", { exact: true })
+    .getByLabel("\u5165\u91d1\u5143\u306e\u540d\u524d", { exact: true })
     .fill("Synthetic renamed");
   await page
     .getByRole("button", {
@@ -311,6 +299,9 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
     .getByRole("textbox", { name: "\u5185\u5bb9", exact: true })
     .fill("Synthetic salary");
   await page
+    .getByRole("combobox", { name: "\u5165\u91d1\u5143", exact: true })
+    .selectOption({ label: "Synthetic renamed" });
+  await page
     .getByRole("button", {
       name: "\u8a18\u9332\u3092\u4fdd\u5b58",
       exact: true,
@@ -327,7 +318,7 @@ test("linked and standalone payslips, warnings, annual salary, employer rename, 
     .getByLabel("\u7d66\u4e0e\u660e\u7d30\u3092\u5165\u529b\u3059\u308b")
     .check();
   await page
-    .getByRole("combobox", { name: "\u52e4\u52d9\u5148", exact: true })
+    .getByRole("combobox", { name: "\u5165\u91d1\u5143", exact: true })
     .selectOption({ label: "Synthetic renamed" });
   await page.getByLabel("\u57fa\u672c\u7d66", { exact: true }).fill("5");
   await page
@@ -362,7 +353,9 @@ test("upgrading a legacy browser preserves records and makes the pre-migration s
   const original = await rows(page, "transactions");
   await page.reload();
   await expect(page.locator(".asset-value")).toContainText("144");
-  expect(await rows(page, "transactions")).toEqual(original);
+  expect(await rows(page, "transactions")).toEqual(
+    original.map((e) => ({ ...e, incomeSourceId: null })),
+  );
   expect(await rows(page, "payslips")).toEqual([]);
   const snapshots = await rows(page, "snapshots");
   const before = snapshots.filter((s) => s.reason === "BEFORE_MIGRATION");

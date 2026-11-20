@@ -48,7 +48,7 @@ Active recurring templates generate the first day of each missing month, startin
 
 ## Payslips and annual salary
 
-When an entry is Income, enable the payslip switch to add payroll details. Select an employer or add one inline without losing the draft. The payment date initially follows the income date; the work period defaults to the previous month and remains editable. Enter basic pay, taxable extras, non-taxable allowances and deductions in integer yen. Less common fields are in the expandable details section. The form shows taxable pay, gross pay, total deductions and net pay live. A mismatch with the income amount produces a warning and an explicit button to copy net pay into that amount; saving a mismatch is allowed.
+When an entry is Income, enable the payslip switch to add payroll details. Choose the income source in the income form; linked payroll uses that same source without a second selector. The payment date initially follows the income date; the work period defaults to the previous month and remains editable. Enter basic pay, taxable extras, non-taxable allowances and deductions in integer yen. Less common fields are in the expandable details section. The form shows taxable pay, gross pay, total deductions and net pay live. A mismatch with the income amount produces a warning and an explicit button to copy net pay into that amount; saving a mismatch is allowed.
 
 Editing an existing income can add, edit or remove its payslip. Turning the payslip switch off confirms removal on save; the income itself remains. Changing a linked income to another category also requires confirmation before removing its payslip. When deleting a linked income, choose to delete its payslip as well or keep a standalone payslip. These changes commit atomically. A payslip never silently changes the household income amount.
 
@@ -56,19 +56,19 @@ Use **Annual > Salary > Add payslip only** for payroll from before migration or 
 
 Annual salary is the sum of taxable pay by the year of the payment date, independent of the work period, income date and household accounting mode. Taxable pay is basic pay plus overtime and other taxable pay. Non-taxable commuting and other non-taxable allowances are excluded from this headline. The section also shows gross/non-taxable pay, social insurance, withheld income tax, resident tax, net pay, employer breakdowns and twelve monthly rows. Its CSV includes annual, employer and monthly summaries.
 
-The missing-payslip notice is a heuristic, not a complete salary detector: it matches an income description exactly (after trimming) against descriptions and employer names already associated with linked payroll. It omits unrelated incomes and does not infer payroll from all income records. Tap the notice to filter records and attach missing slips.
+The missing-payslip notice identifies unlinked income records whose income source already has linked payroll. It matches stable source IDs, not descriptions. Tap the notice to filter those records and attach missing slips.
 
 Settings manages employers with stable IDs, rename, reordering and hide/show. An employer used by any slip cannot be deleted. Optional named salary targets are entered by the user, included in backups and compared with annual taxable salary. No statutory thresholds or tax-eligibility decision rules are embedded.
 
 ## Schema migration and recovery
 
-Before opening schema 2 over an existing schema-1 database, the app uses a separate connection to commit a flat BEFORE_MIGRATION snapshot. It then closes that connection and adds only the new tables. Identical source content reuses the same protected copy; a failed attempt followed by new legacy entries produces a new copy. A final upgrade-boundary check captures writes that arrived after the preflight copy. The initial committed copy remains available even if the version-change transaction aborts. A new empty installation does not need a migration snapshot.
+Before opening schema 2 over an existing schema-1 database, the app uses a separate connection to commit a flat BEFORE_MIGRATION snapshot. It then closes that connection and upgrades the schema, preserving monetary values, dates, descriptions and source IDs. Identical source content reuses the same protected copy; a failed attempt followed by new legacy entries produces a new copy. A final upgrade-boundary check captures writes that arrived after the preflight copy. The initial committed copy remains available even if the version-change transaction aborts. A new empty installation does not need a migration snapshot.
 
 An upgrade failure stops normal startup without clearing or rewriting existing financial records. The error screen prepares a recovery JSON from the protected snapshot, or the unchanged current records if they are newer, and offers native save, explicit sharing fallback or download with confirmation. When another tab blocks the upgrade, the app asks for the other tab to be closed; it never deletes the database to unblock it. Save unfinished work and close other household-budget tabs before updating across a schema change.
 
 Retention is eight weekly snapshots, five combined manual/before-import snapshots, and a separate five migration snapshots. Internal copies remain in the same browser and are not an external backup.
 
-Full JSON exports use schema version 2 and include payslips, employers and named targets. Schema-1 files and historical snapshots are still accepted, with missing payroll tables and targets treated as empty. Restoring an old file replaces current payroll too: the preview states that limitation and creates a full BEFORE_IMPORT recovery copy first. Backups and snapshots are flat and never recursively nest their own snapshot history. Import previews include counts and the date period.
+Full JSON exports use schema version 3 and include payslips, employers and named targets. Schema-1 files and historical snapshots are still accepted, with missing payroll tables and targets treated as empty. Restoring an old file replaces current payroll too: the preview states that limitation and creates a full BEFORE_IMPORT recovery copy first. Backups and snapshots are flat and never recursively nest their own snapshot history. Import previews include counts and the date period.
 
 ## External backups and recovery
 
@@ -97,3 +97,11 @@ Optional flags: `--first-date`, `--first-amount`, `--split-date`, `--split-amoun
 ## Implementation references
 
 [GitHub Pages workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages), [Dexie transactions](https://dexie.org/docs/Dexie/Dexie.transaction()), [File System Access](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access), and [PWA update prompts](https://vite-pwa-org.netlify.app/guide/prompt-for-update.html).
+
+## Version 0.3.0: category-specific forms and income sources
+
+Choose the category first. Income shows date, amount, income source, memo and optional payroll; expense shows date, amount, memo, store, installments and payment method. Adjustments show only date, amount and memo. Switching categories retains draft values until save. Saved entries clear irrelevant fields. Editing a category confirms discarded information; a linked payslip may be deleted or retained standalone. A recurring row changed to income is detached from its template; the template itself remains.
+
+Income sources replace employers and are separate from stores. Linked payroll uses the entry source, with no second source selector. Standalone payroll selects its own income source. Schema 3 preserves employer IDs while moving them to incomeSources and relinks payroll and its income records. Schema-1 and schema-2 backups remain readable. Pre-migration and recovery protection also applies to this update.
+
+CSV income rows ignore installments and payment fields. An empty or generic Other store column takes the description as the source and clears that description; a specific store column becomes the income source and retains the description. The preview lists source names and counts. Rename them there to merge spelling variants before replacement. Adjustment income has no source. The missing-payslip notice now matches income-source IDs with existing linked payroll, rather than descriptions.

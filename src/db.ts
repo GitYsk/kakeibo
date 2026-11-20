@@ -27,11 +27,12 @@ import {
   type Snapshot,
   type State,
   type Store,
-  type Employer,
+  type IncomeSource,
   type Payslip,
   validatePayslip,
   validateSalaryTargets,
   PAY_FIELDS,
+  normalizeEntry,
 } from "./core.ts";
 export class BudgetDB extends Dexie {
   transactions!: Table<Entry, number>;
@@ -39,7 +40,7 @@ export class BudgetDB extends Dexie {
   stores!: Table<Store, number>;
   snapshots!: Table<Snapshot, number>;
   settings!: Table<{ id: string; value: Settings }, string>;
-  employers!: Table<Employer, number>;
+  incomeSources!: Table<IncomeSource, number>;
   payslips!: Table<Payslip, number>;
   private opening?: Promise<void>;
   constructor(name = "kakeibo-local") {
@@ -51,7 +52,37 @@ export class BudgetDB extends Dexie {
         payslips: "++id,&transactionId,employerId,payDate",
       })
       .upgrade(async (tx) => {
-        await captureMigrationBoundary(tx, "0.2.0");
+        await captureMigrationBoundary(tx, "0.3.0");
+      });
+    this.version(3)
+      .stores({
+        employers: null,
+        incomeSources: "++id,&name,sortOrder",
+        payslips: "++id,&transactionId,incomeSourceId,payDate",
+        transactions: LEGACY_SCHEMA.transactions + ",incomeSourceId",
+      })
+      .upgrade(async (tx) => {
+        await captureMigrationBoundary(tx, "0.3.0", undefined, 2);
+        const sources = await tx.table("employers").toArray();
+        await tx.table("incomeSources").bulkPut(sources);
+        await tx
+          .table("payslips")
+          .toCollection()
+          .modify((p: any) => {
+            p.incomeSourceId = p.employerId;
+            delete p.employerId;
+          });
+        const slips = await tx.table("payslips").toArray();
+        await tx
+          .table("transactions")
+          .toCollection()
+          .modify((e: any) => {
+            e.incomeSourceId =
+              e.type === "INCOME"
+                ? (slips.find((p) => p.transactionId === e.id)
+                    ?.incomeSourceId ?? null)
+                : null;
+          });
       });
   }
   async prepareOpen(version = "0.2.0") {
@@ -74,7 +105,7 @@ export class BudgetDB extends Dexie {
       this.snapshots,
       this.settings,
       this.payslips,
-      this.employers,
+      this.incomeSources,
     ];
   }
   async prefs(): Promise<Settings> {
@@ -90,7 +121,7 @@ export class BudgetDB extends Dexie {
     if (!this.isOpen()) await this.prepareOpen();
     return this.transaction("r", this.tablesForWrite(), async () => ({
       payslips: await this.payslips.toArray(),
-      employers: (await this.employers.toArray()).sort(
+      incomeSources: (await this.incomeSources.toArray()).sort(
         (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
       ),
       entries: await this.transactions.toArray(),
@@ -131,9 +162,9 @@ export class BudgetDB extends Dexie {
   async exportCore(version: string, now: string): Promise<CoreBackup> {
     return {
       format: "kakeibo-web",
-      schemaVersion: 2,
+      schemaVersion: 3,
       payslips: await this.payslips.toArray(),
-      employers: await this.employers.toArray(),
+      incomeSources: await this.incomeSources.toArray(),
       exportedAt: now,
       appVersion: version,
       transactions: await this.transactions.toArray(),
@@ -363,6 +394,7 @@ export class BudgetDB extends Dexie {
     date = tokyoDate(),
     now = new Date().toISOString(),
     payroll?: Payslip | null,
+    disposition?: "KEEP" | "DELETE",
   ) {
     return this.transaction("rw", this.tablesForWrite(), async () => {
       const prior = input.id
@@ -372,6 +404,12 @@ export class BudgetDB extends Dexie {
         !input.id || prior,
         "\u8a18\u9332\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
       );
+      input = normalizeEntry(input);
+      if (input.incomeSourceId)
+        requireValue(
+          await this.incomeSources.get(input.incomeSourceId),
+          "Invalid income source",
+        );
       const recurringId =
         input.recurringId ??
         (input.paymentMethod === "MONTHLY" ? crypto.randomUUID() : null);
@@ -403,7 +441,11 @@ export class BudgetDB extends Dexie {
         .equals(id)
         .first();
       if (payroll === null) {
-        if (linked) await this.payslips.delete(linked.id!);
+        if (linked) {
+          if (disposition === "KEEP")
+            await this.payslips.update(linked.id!, { transactionId: null });
+          else await this.payslips.delete(linked.id!);
+        }
       } else if (payroll !== undefined) {
         requireValue(
           e.type === "INCOME",
@@ -417,12 +459,13 @@ export class BudgetDB extends Dexie {
           ...payroll,
           id: linked?.id,
           transactionId: id,
+          incomeSourceId: e.incomeSourceId ?? payroll.incomeSourceId,
           createdAt: linked?.createdAt ?? now,
           updatedAt: now,
         });
         requireValue(
-          await this.employers.get(slip.employerId),
-          "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+          await this.incomeSources.get(slip.incomeSourceId),
+          "\u5165\u91d1\u5143\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
         );
         if (slip.id) await this.payslips.put(slip);
         else await this.payslips.add(slip);
@@ -520,104 +563,124 @@ export class BudgetDB extends Dexie {
         .modify({ paymentMethod: "MONTHLY_ENDED", updatedAt: now });
     });
   }
-  async addEmployer(rawName: string): Promise<number> {
+  async addIncomeSource(rawName: string): Promise<number> {
     const name = rawName.trim();
     requireValue(
       name.length > 0 && name.length <= 200,
-      "\u52e4\u52d9\u5148\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
+      "\u5165\u91d1\u5143\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
     );
-    return this.transaction("rw", this.employers, async () => {
-      const existing = await this.employers.where("name").equals(name).first();
+    return this.transaction("rw", this.incomeSources, async () => {
+      const existing = await this.incomeSources
+        .where("name")
+        .equals(name)
+        .first();
       if (existing) return existing.id!;
-      const rows = await this.employers.toArray();
-      return this.employers.add({
+      const rows = await this.incomeSources.toArray();
+      return this.incomeSources.add({
         name,
         sortOrder: Math.max(-1, ...rows.map((e) => e.sortOrder)) + 1,
         hidden: false,
       });
     });
   }
-  async renameEmployer(id: number, rawName: string) {
+  async renameIncomeSource(id: number, rawName: string) {
     const name = rawName.trim();
     requireValue(
       name.length > 0 && name.length <= 200,
-      "\u52e4\u52d9\u5148\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
+      "\u5165\u91d1\u5143\u306f1\u304b\u3089200\u6587\u5b57\u3067\u3059\u3002",
     );
-    await this.transaction("rw", this.employers, async () => {
-      const duplicate = await this.employers.where("name").equals(name).first();
+    await this.transaction("rw", this.incomeSources, async () => {
+      const duplicate = await this.incomeSources
+        .where("name")
+        .equals(name)
+        .first();
       requireValue(
         !duplicate || duplicate.id === id,
-        "\u540c\u3058\u540d\u524d\u306e\u52e4\u52d9\u5148\u304c\u3042\u308a\u307e\u3059\u3002",
+        "\u540c\u3058\u540d\u524d\u306e\u5165\u91d1\u5143\u304c\u3042\u308a\u307e\u3059\u3002",
       );
       requireValue(
-        await this.employers.get(id),
-        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+        await this.incomeSources.get(id),
+        "\u5165\u91d1\u5143\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
       );
-      await this.employers.update(id, { name });
+      await this.incomeSources.update(id, { name });
     });
   }
-  async moveEmployer(id: number, direction: -1 | 1) {
-    await this.transaction("rw", this.employers, async () => {
-      const rows = (await this.employers.toArray()).sort(
+  async moveIncomeSource(id: number, direction: -1 | 1) {
+    await this.transaction("rw", this.incomeSources, async () => {
+      const rows = (await this.incomeSources.toArray()).sort(
         (a, b) => a.sortOrder - b.sortOrder,
       );
       const i = rows.findIndex((e) => e.id === id);
       const other = rows[i + direction];
       if (i < 0 || !other) return;
-      await this.employers.update(id, { sortOrder: other.sortOrder });
-      await this.employers.update(other.id!, { sortOrder: rows[i].sortOrder });
+      await this.incomeSources.update(id, { sortOrder: other.sortOrder });
+      await this.incomeSources.update(other.id!, {
+        sortOrder: rows[i].sortOrder,
+      });
     });
   }
-  async toggleEmployer(id: number) {
-    await this.transaction("rw", this.employers, async () => {
-      const row = await this.employers.get(id);
+  async toggleIncomeSource(id: number) {
+    await this.transaction("rw", this.incomeSources, async () => {
+      const row = await this.incomeSources.get(id);
       requireValue(
         row,
-        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+        "\u5165\u91d1\u5143\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
       );
-      await this.employers.update(id, { hidden: !row.hidden });
+      await this.incomeSources.update(id, { hidden: !row.hidden });
     });
   }
-  async deleteEmployer(id: number) {
-    await this.transaction("rw", [this.employers, this.payslips], async () => {
-      requireValue(
-        !(await this.payslips.where("employerId").equals(id).count()),
-        "\u660e\u7d30\u3067\u4f7f\u7528\u4e2d\u3067\u3059\u3002\u524a\u9664\u305b\u305a\u975e\u8868\u793a\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
-      );
-      await this.employers.delete(id);
-    });
+  async deleteIncomeSource(id: number) {
+    await this.transaction(
+      "rw",
+      [this.incomeSources, this.payslips, this.transactions],
+      async () => {
+        requireValue(
+          !(await this.payslips.where("incomeSourceId").equals(id).count()) &&
+            !(await this.transactions
+              .where("incomeSourceId")
+              .equals(id)
+              .count()),
+          "\u660e\u7d30\u3067\u4f7f\u7528\u4e2d\u3067\u3059\u3002\u524a\u9664\u305b\u305a\u975e\u8868\u793a\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+        );
+        await this.incomeSources.delete(id);
+      },
+    );
   }
   async saveStandalonePayslip(input: Payslip, now = new Date().toISOString()) {
-    return this.transaction("rw", [this.payslips, this.employers], async () => {
-      const prior = input.id ? await this.payslips.get(input.id) : undefined;
-      requireValue(
-        !input.id || prior,
-        "\u660e\u7d30\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
-      );
-      requireValue(
-        !prior || prior.transactionId === null,
-        "\u95a2\u9023\u3059\u308b\u5165\u91d1\u306e\u753b\u9762\u3067\u7de8\u96c6\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
-      );
-      const slip = validatePayslip({
-        ...input,
-        transactionId: null,
-        createdAt: prior?.createdAt ?? now,
-        updatedAt: now,
-      });
-      requireValue(
-        await this.employers.get(slip.employerId),
-        "\u52e4\u52d9\u5148\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
-      );
-      const id = slip.id
-        ? await this.payslips.put(slip)
-        : await this.payslips.add(slip);
-      safeSum(
-        (await this.payslips.toArray()).flatMap((p) =>
-          PAY_FIELDS.map((key) => p[key]),
-        ),
-      );
-      return id;
-    });
+    return this.transaction(
+      "rw",
+      [this.payslips, this.incomeSources],
+      async () => {
+        const prior = input.id ? await this.payslips.get(input.id) : undefined;
+        requireValue(
+          !input.id || prior,
+          "\u660e\u7d30\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+        );
+        requireValue(
+          !prior || prior.transactionId === null,
+          "\u95a2\u9023\u3059\u308b\u5165\u91d1\u306e\u753b\u9762\u3067\u7de8\u96c6\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+        );
+        const slip = validatePayslip({
+          ...input,
+          transactionId: null,
+          createdAt: prior?.createdAt ?? now,
+          updatedAt: now,
+        });
+        requireValue(
+          await this.incomeSources.get(slip.incomeSourceId),
+          "\u5165\u91d1\u5143\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002",
+        );
+        const id = slip.id
+          ? await this.payslips.put(slip)
+          : await this.payslips.add(slip);
+        safeSum(
+          (await this.payslips.toArray()).flatMap((p) =>
+            PAY_FIELDS.map((key) => p[key]),
+          ),
+        );
+        return id;
+      },
+    );
   }
   async deletePayslip(id: number) {
     await this.payslips.delete(id);
@@ -639,11 +702,11 @@ export class BudgetDB extends Dexie {
         now,
       );
       await this.payslips.clear();
-      await this.employers.clear();
+      await this.incomeSources.clear();
       await this.transactions.clear();
       await this.recurringPayments.clear();
       await this.stores.clear();
-      await this.employers.bulkAdd(core.employers ?? []);
+      await this.incomeSources.bulkAdd(core.incomeSources ?? []);
       await this.payslips.bulkAdd(core.payslips ?? []);
       await this.stores.bulkAdd(core.stores);
       await this.recurringPayments.bulkAdd(core.recurringPayments);

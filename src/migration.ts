@@ -23,7 +23,7 @@ async function rawCore(
   const names = new Set(database.tables.map((t) => t.name));
   return {
     format: "kakeibo-web",
-    schemaVersion: database.verno >= 2 ? 2 : 1,
+    schemaVersion: database.verno >= 3 ? 3 : database.verno >= 2 ? 2 : 1,
     exportedAt: now,
     appVersion,
     transactions: await database.table("transactions").toArray(),
@@ -35,7 +35,9 @@ async function rawCore(
     ...(names.has("payslips")
       ? {
           payslips: await database.table("payslips").toArray(),
-          employers: await database.table("employers").toArray(),
+          ...(names.has("incomeSources")
+            ? { incomeSources: await database.table("incomeSources").toArray() }
+            : { employers: await database.table("employers").toArray() }),
         }
       : {}),
   };
@@ -50,23 +52,14 @@ export async function protectBeforeMigration(
     const legacy = new Dexie(name, { autoOpen: false });
     try {
       await legacy.open();
-      if (legacy.verno >= 2) return;
+      if (legacy.verno >= 3) return;
       await legacy.transaction("rw", legacy.tables, async () => {
         const snapshots = legacy.table<Snapshot, number>("snapshots");
         const data = await rawCore(legacy, appVersion, now);
-        const signature = (core: CoreBackup) =>
-          JSON.stringify([
-            core.transactions,
-            core.recurringPayments,
-            core.stores,
-            core.settings,
-          ]);
+        const signature = migrationSignature;
         const protectedCopy = (
           await snapshots.where("reason").equals("BEFORE_MIGRATION").toArray()
-        ).some(
-          (s) =>
-            s.data.schemaVersion === 1 && signature(s.data) === signature(data),
-        );
+        ).some((s) => signature(s.data) === signature(data));
         if (!protectedCopy) {
           await snapshots.add({
             createdAt: now,
@@ -112,15 +105,7 @@ export async function recoveryBackup(
             b.createdAt.localeCompare(a.createdAt) || (b.id ?? 0) - (a.id ?? 0),
         )[0];
       const current = await rawCore(legacy, appVersion, now);
-      const signature = (core: CoreBackup) =>
-        JSON.stringify([
-          core.transactions,
-          core.recurringPayments,
-          core.stores,
-          core.settings,
-          core.payslips,
-          core.employers,
-        ]);
+      const signature = migrationSignature;
       return latest && signature(latest.data) === signature(current)
         ? { ...latest.data, snapshots: [] }
         : { ...current, snapshots: [] };
@@ -134,10 +119,17 @@ export async function captureMigrationBoundary(
   tx: Transaction,
   appVersion: string,
   now = new Date().toISOString(),
+  from: 1 | 2 = 1,
 ) {
   const data: CoreBackup = {
     format: "kakeibo-web",
-    schemaVersion: 1,
+    schemaVersion: from,
+    ...(from === 2
+      ? {
+          payslips: await tx.table("payslips").toArray(),
+          employers: await tx.table("employers").toArray(),
+        }
+      : {}),
     exportedAt: now,
     appVersion,
     transactions: await tx.table("transactions").toArray(),
@@ -146,18 +138,11 @@ export async function captureMigrationBoundary(
     settings:
       (await tx.table("settings").get("preferences"))?.value ?? defaults(),
   };
-  const signature = (core: CoreBackup) =>
-    JSON.stringify([
-      core.transactions,
-      core.recurringPayments,
-      core.stores,
-      core.settings,
-    ]);
+  const signature = migrationSignature;
   const table = tx.table<Snapshot, number>("snapshots");
   if (
     !(await table.where("reason").equals("BEFORE_MIGRATION").toArray()).some(
-      (s) =>
-        s.data.schemaVersion === 1 && signature(s.data) === signature(data),
+      (s) => signature(s.data) === signature(data),
     )
   )
     await table.add({
@@ -166,4 +151,16 @@ export async function captureMigrationBoundary(
       reason: "BEFORE_MIGRATION",
       data,
     });
+}
+
+function migrationSignature(core: CoreBackup) {
+  return JSON.stringify([
+    core.transactions,
+    core.recurringPayments,
+    core.stores,
+    core.settings,
+    core.payslips ?? [],
+    (core as any).employers ?? [],
+    core.incomeSources ?? [],
+  ]);
 }
